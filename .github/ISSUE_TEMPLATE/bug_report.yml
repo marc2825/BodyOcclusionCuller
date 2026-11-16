@@ -1,0 +1,36 @@
+name: 不具合の報告 / Bug report
+description: 再現できる不具合を報告する / Report a reproducible problem
+title: "[Bug] "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        購入したモデル、Private full diagnostics、個人情報が写ったスクリーンショットは添付しないでください。
+        Do not attach purchased models, private full diagnostics or screenshots with personal information.
+  - type: input
+    id: versions
+    attributes:
+      label: Blender・UnderWhere のバージョンと OS / Blender, UnderWhere version and OS
+      placeholder: "Blender 5.2.3, UnderWhere 1.0.0, Windows 11"
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: 再現手順と、期待した結果・実際の結果 / Steps, expected and actual result
+      description: できれば同梱のデモか、自作の最小限のデータで再現してください。/ The bundled demo or a minimal original file is preferred.
+    validations:
+      required: true
+  - type: textarea
+    id: diagnostics
+    attributes:
+      label: 共有用レポート / Shareable report
+      description: Export Shareable Report で書き出した JSON を貼り付けてください。/ Paste the JSON from Export Shareable Report.
+      render: json
+  - type: checkboxes
+    id: privacy
+    attributes:
+      label: 添付物の確認 / Attachments
+      options:
+        - label: 購入モデル、完全な診断データ、個人情報を含めていません。/ I have not included purchased models, full diagnostics or personal information.
+          required: true

@@ -1,0 +1,10 @@
+name: 改善の提案 / Feature request
+description: 使い方の改善を提案する / Suggest a workflow improvement
+body:
+  - type: textarea
+    id: workflow
+    attributes:
+      label: やりたいことと期待する動作 / What you want to do and the expected behavior
+      description: 購入したモデルのデータや個人情報は含めないでください。/ Do not include purchased model data or personal information.
+    validations:
+      required: true

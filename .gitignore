@@ -1,0 +1,8 @@
+dist/
+outputs/
+__pycache__/
+*.pyc
+*.vrm
+*.fbx
+*.blend
+*.blend[0-9]*
