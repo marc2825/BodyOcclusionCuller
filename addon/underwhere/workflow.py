@@ -124,7 +124,9 @@ def object_mode(context, settings):
         bpy.ops.object.mode_set(mode='OBJECT')
     was_edit = context.mode == 'EDIT_MESH' and context.edit_object == settings.body
     if context.mode != 'OBJECT' and not was_edit:
-        raise adapter.InputError("Edit the configured Body or use Object Mode")
+        obj = context.edit_object or context.active_object
+        mode = "Edit Mode" if context.mode.startswith('EDIT') else context.mode.replace('_', ' ').title()
+        raise adapter.InputError(f"Leave {mode} on {obj.name if obj else 'the active object'} first (Tab)")
     try:
         if was_edit:
             bpy.ops.object.mode_set(mode='OBJECT')

@@ -1054,6 +1054,13 @@ class BlenderIntegration(unittest.TestCase):
         fx.mask(body)
         self.analyze(s)
         draw_all()
+        # While selecting, the panel shows the selected count and a Done button.
+        s.preview_mode = 'CLASSIFY'
+        for target in ('COMPARISON', 'BODY'):
+            bpy.ops.underwhere.edit_selection(target=target)
+            self.assertIn("UNDERWHERE_PT_faces", draw_all())
+            self.assertIn(("operator", "underwhere.finish_selection"), calls)
+            bpy.ops.underwhere.finish_selection()
         for idname in ("underwhere.preflight", "underwhere.analyze",
                        "underwhere.repair_policy", "underwhere.preview",
                        "underwhere.apply", "underwhere.export"):
@@ -1094,11 +1101,19 @@ class BlenderIntegration(unittest.TestCase):
         bmesh.update_edit_mesh(preview.data)
         mapping = list(preview["underwhere_face_map"])
         bpy.ops.underwhere.override('EXEC_DEFAULT', action='HIDE', review_only=True)
-        self.assertEqual(bpy.context.mode, 'OBJECT')
         plan = workflow.read_report(s)["output_plan"]
         self.assertEqual(plan["manual_risk_faces"], sorted(mapping[i] for i in (1, 3, 4)))
-        # The comparison is redrawn, not left stale or deleted.
-        self.assertIsNotNone(adapter.current_preview(bpy.context.scene))
+        # The comparison is redrawn, not left stale or deleted, and selection
+        # continues on it so the next region can be dragged right away.
+        redrawn = adapter.current_preview(bpy.context.scene)
+        self.assertIsNotNone(redrawn)
+        self.assertEqual(bpy.context.mode, 'EDIT_MESH')
+        self.assertEqual(bpy.context.edit_object, redrawn)
+        self.assertEqual(redrawn.data.total_face_sel, 0)
+        bpy.ops.underwhere.finish_selection()
+        self.assertEqual(bpy.context.mode, 'OBJECT')
+        self.assertTrue(redrawn.hide_select)
+        self.assertEqual(bpy.context.view_layer.objects.active, s.body)
 
     def test_61_review_only_filter_never_overrides_decided_faces(self):
         body, _, s = fx.setup()  # closed opaque shell: every face is a Candidate
@@ -1199,6 +1214,76 @@ class BlenderIntegration(unittest.TestCase):
         ui.on_undo(None)
         self.assertIn('body_occlusion_mask', linked)
         self.assertEqual(s.body, body)
+
+    def test_66_comparison_selection_starts_without_update_and_survives_refusals(self):
+        _, _, s = fx.setup(alpha=.5)  # every face Review for an untrusted material
+        self.analyze(s)
+        scene = bpy.context.scene
+        s.preview_mode = 'OFF'
+        # Box / Lasso / Brush show the comparison themselves.
+        bpy.ops.underwhere.edit_selection(target='COMPARISON', tool='BOX')
+        preview = adapter.current_preview(scene)
+        self.assertIsNotNone(preview)
+        self.assertEqual(s.preview_mode, 'CLASSIFY')
+        self.assertEqual(bpy.context.edit_object, preview)
+        # Keep with nothing selected is refused without leaving the selection.
+        with self.assertRaisesRegex(RuntimeError, 'No faces selected'):
+            bpy.ops.underwhere.override('EXEC_DEFAULT', action='KEEP')
+        self.assertEqual(bpy.context.edit_object, preview)
+        # Changing the comparison while selecting keeps selecting on the new one.
+        s.preview_mode = 'DIFF'
+        bpy.ops.underwhere.preview()
+        redrawn = adapter.current_preview(scene)
+        self.assertTrue(redrawn.name.endswith('DIFF'))
+        self.assertEqual(bpy.context.edit_object, redrawn)
+        self.assertEqual(sum(adapter.is_preview(obj) for obj in bpy.data.objects), 1)
+        # Bulk selection from the comparison moves to the Body instead of failing.
+        bpy.ops.underwhere.select_group(group='REVIEW')
+        self.assertEqual(bpy.context.edit_object, s.body)
+        self.assertEqual(s.body.data.total_face_sel, 6)
+        bpy.ops.underwhere.finish_selection()
+        self.assertEqual(bpy.context.mode, 'OBJECT')
+        # Off removes the comparison even when chosen while selecting on it.
+        bpy.ops.underwhere.edit_selection(target='COMPARISON')
+        s.preview_mode = 'OFF'
+        bpy.ops.underwhere.preview()
+        self.assertIsNone(adapter.current_preview(scene))
+        self.assertEqual(bpy.context.mode, 'OBJECT')
+
+    def test_67_review_only_refusal_keeps_the_comparison_selection(self):
+        import bmesh
+        _, _, s = fx.setup()  # closed opaque shell: every face is a Candidate
+        self.analyze(s)
+        bpy.ops.underwhere.edit_selection(target='COMPARISON')
+        preview = adapter.current_preview(bpy.context.scene)
+        mesh = bmesh.from_edit_mesh(preview.data)
+        for face in mesh.faces:
+            face.select_set(True)
+        bmesh.update_edit_mesh(preview.data)
+        with self.assertRaisesRegex(RuntimeError, 'No Review'):
+            bpy.ops.underwhere.override('EXEC_DEFAULT', action='HIDE', review_only=True)
+        # The same faces stay selected so the user can untick the filter and retry.
+        self.assertEqual(bpy.context.edit_object, preview)
+        self.assertEqual(preview.data.total_face_sel, 6)
+        self.assertEqual(workflow.read_report(s)["overrides"], {})
+        bpy.ops.underwhere.override('EXEC_DEFAULT', action='HIDE', review_only=False)
+        self.assertEqual(len(workflow.read_report(s)["overrides"]), 6)
+        self.assertEqual(bpy.context.mode, 'EDIT_MESH')
+        bpy.ops.underwhere.finish_selection()
+
+    def test_68_other_mesh_in_edit_mode_is_never_left_silently(self):
+        _, shell, s = fx.setup(alpha=.5)
+        self.analyze(s)
+        for obj in bpy.context.selected_objects:
+            obj.select_set(False)
+        shell.select_set(True)
+        bpy.context.view_layer.objects.active = shell
+        bpy.ops.object.mode_set(mode='EDIT')
+        for target in ('COMPARISON', 'BODY'):
+            with self.assertRaisesRegex(RuntimeError, 'Leave Edit Mode on FixtureShell'):
+                bpy.ops.underwhere.edit_selection(target=target)
+            self.assertEqual(bpy.context.edit_object, shell)
+        bpy.ops.object.mode_set(mode='OBJECT')
 
 
 if __name__ == "__main__":

@@ -95,12 +95,44 @@ def review_reason_counts(report):
     return sorted(counts.items(), key=lambda item: (-item[1], item[0]))
 
 
+def editing_comparison(context):
+    return (context.mode == 'EDIT_MESH' and context.edit_object is not None
+            and adapter.is_preview(context.edit_object))
+
+
+def leave_other_edit_mode_message(context):
+    return f"Leave Edit Mode on {context.edit_object.name} first (Tab), then press Box, Lasso or Brush"
+
+
+def start_comparison_selection(context, obj, *, clear=True):
+    """Enter face-select Edit Mode on the comparison mesh.
+
+    With clear=False the faces selected there before are kept (used to resume
+    after a failed Keep / Hide)."""
+    import bmesh
+    if context.mode != 'OBJECT':
+        bpy.ops.object.mode_set(mode='OBJECT')
+    for other in context.selected_objects:
+        other.select_set(False)
+    obj.hide_select = False
+    obj.select_set(True)
+    context.view_layer.objects.active = obj
+    context.tool_settings.mesh_select_mode = (False, False, True)
+    bpy.ops.object.mode_set(mode='EDIT')
+    if clear:
+        mesh = bmesh.from_edit_mesh(obj.data)
+        for element in list(mesh.verts) + list(mesh.edges) + list(mesh.faces):
+            element.select_set(False)
+        bmesh.update_edit_mesh(obj.data)
+
+
 def select_body_faces(context, settings, indices):
     """Select exactly `indices` on the configured Body in Edit Mode and frame them."""
     import bmesh
     if context.mode == 'EDIT_MESH':
-        if context.edit_object != settings.body:
-            raise adapter.InputError("Edit the configured Body")
+        # Leaving the comparison is harmless; any other mesh may hold user edits.
+        if context.edit_object != settings.body and not editing_comparison(context):
+            raise adapter.InputError(leave_other_edit_mode_message(context))
         bpy.ops.object.mode_set(mode='OBJECT')
     for obj in context.selected_objects:
         obj.select_set(False)
@@ -208,7 +240,7 @@ class UNDERWHERE_Settings(PropertyGroup):
         ('BODY', "Body", "Select on the Body itself"),
     ], default='COMPARISON')
     override_review_only: BoolProperty(
-        name="Review faces only", default=True,
+        name="Only change Review faces", default=True,
         description="Keep / Hide affect only Review and existing-mask issue faces in the selection, "
                     "so a rough box, lasso or paint selection never overrides Keep faces")
     preview_mode: EnumProperty(name="Compare", items=[
@@ -430,11 +462,17 @@ class UNDERWHERE_OT_preview(SafeOperator, Operator):
         try:
             self.available(context)
             s = context.scene.underwhere
+            was_selecting = editing_comparison(context)
+            if was_selecting:
+                # clear_preview never removes a mesh in Edit Mode.
+                bpy.ops.object.mode_set(mode='OBJECT')
             if s.preview_mode == 'OFF':
                 adapter.clear_preview(context.scene)
             else:
                 report = workflow.fresh_report(context, s)
-                adapter.preview(context, report, s.preview_mode)
+                obj = adapter.preview(context, report, s.preview_mode)
+                if was_selecting and obj is not None:
+                    start_comparison_selection(context, obj)
             return {'FINISHED'}
         except Exception as exc:
             adapter.clear_preview(context.scene)
@@ -496,6 +534,25 @@ SELECTION_TOOLS = {
 }
 
 
+def selecting_on(context, settings):
+    """'COMPARISON' or 'BODY' while faces are being chosen there, else None."""
+    if context.mode != 'EDIT_MESH' or context.edit_object is None:
+        return None
+    if adapter.is_preview(context.edit_object):
+        return 'COMPARISON'
+    return 'BODY' if context.edit_object == settings.body else None
+
+
+def active_selection_tool(context):
+    """'BOX', 'LASSO' or 'CIRCLE' when that tool is active in the 3D View, else None."""
+    try:
+        tool = context.workspace.tools.from_space_view3d_mode(context.mode, create=False)
+    except (AttributeError, TypeError, RuntimeError):
+        return None
+    idname = getattr(tool, "idname", None)
+    return next((key for key, value in SELECTION_TOOLS.items() if value == idname), None)
+
+
 class UNDERWHERE_OT_edit_selection(SafeOperator, Operator):
     bl_idname = "underwhere.edit_selection"
     bl_label = "Select Faces"
@@ -514,7 +571,6 @@ class UNDERWHERE_OT_edit_selection(SafeOperator, Operator):
     ], default='NONE')
 
     def execute(self, context):
-        import bmesh
         try:
             self.available(context)
             s = context.scene.underwhere
@@ -525,27 +581,48 @@ class UNDERWHERE_OT_edit_selection(SafeOperator, Operator):
             else:
                 obj = adapter.current_preview(context.scene)
                 if obj is None:
-                    raise adapter.InputError("Update Comparison first")
+                    # Show the comparison instead of asking for another click.
+                    if context.mode == 'EDIT_MESH' and context.edit_object != s.body:
+                        raise adapter.InputError(leave_other_edit_mode_message(context))
+                    if s.preview_mode == 'OFF':
+                        s.preview_mode = 'CLASSIFY'
+                    obj = adapter.preview(context, workflow.fresh_report(context, s), s.preview_mode)
                 if context.edit_object != obj:
-                    if context.mode != 'OBJECT':
-                        bpy.ops.object.mode_set(mode='OBJECT')
-                    for other in context.selected_objects:
-                        other.select_set(False)
-                    obj.hide_select = False
-                    obj.select_set(True)
-                    context.view_layer.objects.active = obj
-                    context.tool_settings.mesh_select_mode = (False, False, True)
-                    bpy.ops.object.mode_set(mode='EDIT')
-                    mesh = bmesh.from_edit_mesh(obj.data)
-                    for element in list(mesh.verts) + list(mesh.edges) + list(mesh.faces):
-                        element.select_set(False)
-                    bmesh.update_edit_mesh(obj.data)
+                    if context.mode == 'EDIT_MESH' and context.edit_object not in (s.body, None) \
+                            and not editing_comparison(context):
+                        raise adapter.InputError(leave_other_edit_mode_message(context))
+                    start_comparison_selection(context, obj)
             if self.tool != 'NONE' and context.area and context.area.type == 'VIEW_3D':
                 bpy.ops.wm.tool_set_by_id(name=SELECTION_TOOLS[self.tool])
-            self.report({'INFO'}, "Drag in the viewport; Shift adds, Ctrl removes. Then Keep / Hide")
+            self.report({'INFO'}, "Drag over faces; Shift adds, Ctrl removes. Then Keep / Hide")
             return {'FINISHED'}
         except Exception as exc:
             return self.fail(context, exc)
+
+
+class UNDERWHERE_OT_finish_selection(Operator):
+    bl_idname = "underwhere.finish_selection"
+    bl_label = "Done"
+    bl_description = "Stop selecting faces and return to Object Mode"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    @classmethod
+    def poll(cls, context):
+        return context.mode == 'EDIT_MESH'
+
+    def execute(self, context):
+        obj = context.edit_object
+        comparison = editing_comparison(context)
+        bpy.ops.object.mode_set(mode='OBJECT')
+        if comparison:
+            # The comparison is a view; hand selection back to the Body.
+            obj.select_set(False)
+            obj.hide_select = True
+            body = context.scene.underwhere.body
+            if body and body.name in context.view_layer.objects:
+                body.select_set(True)
+                context.view_layer.objects.active = body
+        return {'FINISHED'}
 
 
 class UNDERWHERE_OT_select_group(SafeOperator, Operator):
@@ -589,7 +666,7 @@ class UNDERWHERE_OT_override(SafeOperator, Operator):
     action: EnumProperty(items=[('KEEP', "Keep", ""), ('HIDE', "Hide", ""),
                                 ('RESET', "Clear Override", "")])
     selected: BoolProperty(name="Use selected faces", default=True)
-    review_only: BoolProperty(name="Review faces only", default=False)
+    review_only: BoolProperty(name="Only change Review faces", default=False)
 
     def invoke(self, context, event):
         if self.action == 'HIDE':
@@ -597,19 +674,31 @@ class UNDERWHERE_OT_override(SafeOperator, Operator):
                 self, event, title="Manual Hide", message="Hide can override exposure or uncertainty. Evidence stays visible.")
         return self.execute(context)
 
+    @classmethod
+    def description(cls, context, properties):
+        return {
+            'KEEP': "Always show the selected faces in the output",
+            'HIDE': "Hide the selected faces in the output. Asks first; Ctrl+Z undoes it",
+            'RESET': "Remove your Keep / Hide from the selected faces and use the automatic result",
+        }.get(properties.action, cls.bl_description)
+
     def execute(self, context):
-        editing_preview = (context.mode == 'EDIT_MESH' and context.edit_object is not None
-                           and adapter.is_preview(context.edit_object))
+        preview_obj = context.edit_object if editing_comparison(context) else None
+        editing_preview = preview_obj is not None
         was_edit = context.mode == 'EDIT_MESH' and not editing_preview
+        redrawn = None
         try:
             self.available(context)
             s = context.scene.underwhere
             preview_indices = None
             if editing_preview:
-                preview_indices = adapter.selected_preview_faces(context.edit_object)
+                preview_indices = adapter.selected_preview_faces(preview_obj)
+                if not preview_indices:
+                    # Checked before leaving Edit Mode so the user can simply drag.
+                    raise adapter.InputError("No faces selected: drag over the comparison first")
                 bpy.ops.object.mode_set(mode='OBJECT')
             elif was_edit and context.edit_object != s.body:
-                raise adapter.InputError("Edit the configured Body to mark selected faces")
+                raise adapter.InputError(leave_other_edit_mode_message(context))
             if was_edit:
                 bpy.ops.object.mode_set(mode='OBJECT')
             report = workflow.fresh_report(context, s).copy()
@@ -621,11 +710,12 @@ class UNDERWHERE_OT_override(SafeOperator, Operator):
             else:
                 indices = [s.face_index]
             if not indices:
-                raise adapter.InputError("Select faces on the Body or the comparison first")
+                raise adapter.InputError("No faces selected: press Box, Lasso or Brush, then drag over faces")
             if self.review_only and self.action != 'RESET':
                 indices = review_faces_only(report, indices)
                 if not indices:
-                    raise adapter.InputError("No Review or existing-mask issue faces in the selection")
+                    raise adapter.InputError(
+                        "No Review faces in the selection; turn off 'Only change Review faces' to change others")
             for index in indices:
                 if index >= len(report["faces"]):
                     raise adapter.InputError("Face index out of range")
@@ -636,16 +726,32 @@ class UNDERWHERE_OT_override(SafeOperator, Operator):
             report["output_verification"] = adapter.measure_plan(context, s, report)
             workflow.save_report(s, report)
             if s.preview_mode != 'OFF' and (editing_preview or adapter.current_preview(context.scene)):
-                adapter.preview(context, workflow.read_report(s), s.preview_mode)
+                redrawn = adapter.preview(context, workflow.read_report(s), s.preview_mode)
             else:
                 adapter.clear_preview(context.scene)
-            self.report({'INFO'}, f"{self.action.title()} applied to {len(indices)} faces")
+            caption = {'KEEP': "Keep", 'HIDE': "Hide", 'RESET': "Clear"}[self.action]
+            follow_up = "; select more or press Done" if editing_preview and redrawn else ""
+            self.report({'INFO'}, f"{caption} applied to {len(indices)} faces{follow_up}")
             return {'FINISHED'}
         except Exception as exc:
             return self.fail(context, exc)
         finally:
             if was_edit and context.mode == 'OBJECT':
                 bpy.ops.object.mode_set(mode='EDIT')
+            elif editing_preview and context.mode == 'OBJECT':
+                # Keep the user in selection: a fresh comparison after success,
+                # or the same faces still selected after a refusal.
+                self.resume_selection(context, redrawn, preview_obj)
+
+    @staticmethod
+    def resume_selection(context, redrawn, previous):
+        try:
+            if redrawn is not None:
+                start_comparison_selection(context, redrawn)
+            elif previous is not None and previous.name in bpy.data.objects:
+                start_comparison_selection(context, previous, clear=False)
+        except (ReferenceError, RuntimeError):
+            pass  # The comparison was removed; Object Mode is a safe place to stop.
 
 
 class UNDERWHERE_OT_apply(SafeOperator, Operator):
@@ -991,7 +1097,104 @@ class UNDERWHERE_PT_review(ResultPanel, Panel):
                 grid.label(text=caption, icon=icon)
         column.label(text="Shown beside the Body; use Material Preview", icon='INFO')
 
-        layout.label(text="Issues")
+        layout.label(text="Fix faces")
+        box = layout.box()
+        selecting = selecting_on(context, s)
+        tool = active_selection_tool(context) if selecting else None
+
+        box.label(text="1  Choose faces")
+        box.prop(s, "selection_target", expand=True)
+        row = box.row(align=True)
+        row.scale_y = 1.3
+        for key, caption, icon in [('BOX', "Box", 'SELECT_SET'), ('LASSO', "Lasso", 'CURVE_BEZCURVE'),
+                                   ('CIRCLE', "Brush", 'BRUSH_DATA')]:
+            op = row.operator("underwhere.edit_selection", text=caption, icon=icon,
+                              depress=selecting == s.selection_target and tool == key)
+            op.target = s.selection_target
+            op.tool = key
+        hint = box.column(align=True)
+        if not selecting:
+            hint.label(text="Press Box, Lasso or Brush to start", icon='INFO')
+        else:
+            count = context.edit_object.data.total_face_sel
+            where = "comparison" if selecting == 'COMPARISON' else "Body"
+            if count:
+                hint.label(text=f"{count} faces selected on the {where}", icon='CHECKMARK')
+            else:
+                hint.label(text=f"Drag over faces on the {where}", icon='MOUSE_LMB_DRAG')
+            hint.label(text="Shift adds, Ctrl removes", icon='BLANK1')
+        review_count = report["counts"].get(REVIEW, 0)
+        existing_count = sum(report["findings"].values())
+        if review_count or existing_count:
+            row = box.row(align=True)
+            if review_count:
+                row.operator("underwhere.select_group", text=f"All Review ({review_count})",
+                             icon='RESTRICT_SELECT_OFF').group = 'REVIEW'
+            if existing_count:
+                row.operator("underwhere.select_group", text=f"Mask issues ({existing_count})",
+                             icon='RESTRICT_SELECT_OFF').group = 'EXISTING'
+
+        box.separator()
+        box.label(text="2  Change them")
+        box.prop(s, "override_review_only", text="Only change Review faces")
+        row = box.row(align=True)
+        row.scale_y = 1.3
+        for action, caption, icon in [('KEEP', "Keep", 'HIDE_OFF'), ('HIDE', "Hide", 'HIDE_ON'),
+                                      ('RESET', "Clear", 'X')]:
+            op = row.operator("underwhere.override", text=caption, icon=icon)
+            op.action = action
+            op.review_only = s.override_review_only
+        if selecting:
+            box.operator("underwhere.finish_selection", text="Done (back to Object Mode)",
+                         icon='CHECKMARK')
+
+        if report["input"]["mode"] == "AUDIT":
+            policy = report["output_plan"].get("repair_policy") or RESTORE_UNRESOLVED
+            layout.label(text="Repair existing mask")
+            column = layout.column(align=True)
+            for value, caption in [(RESTORE_UNRESOLVED, "Restore exposed + undecided"),
+                                   (RESTORE_EXPOSED, "Restore exposed only")]:
+                column.operator("underwhere.repair_policy", text=caption,
+                                depress=policy == value).policy = value
+
+
+class UNDERWHERE_PT_reasons(ResultPanel, Panel):
+    bl_label = "Select by Reason"
+    bl_idname = "UNDERWHERE_PT_reasons"
+    bl_parent_id = "UNDERWHERE_PT_review"
+    bl_options = {'DEFAULT_CLOSED'}
+
+    def draw(self, context):
+        s = context.scene.underwhere
+        layout = self.layout
+        layout.enabled = not s.status.startswith("STALE")
+        reasons = review_reason_counts(current_report(context))
+        if not reasons:
+            layout.label(text="No undecided faces", icon='CHECKMARK')
+            return
+        layout.label(text="Selects on the Body; then Keep / Hide above", icon='INFO')
+        column = layout.column(align=True)
+        for code, count in reasons[:8]:
+            op = column.operator("underwhere.select_group",
+                                 text=f"{reason_label(code)} ({count})", icon='DOT')
+            op.group = 'REASON'
+            op.reason = code
+            hint = reason_hint(code)
+            if hint:
+                column.label(text=hint, icon='LIGHT')
+
+
+class UNDERWHERE_PT_faces(ResultPanel, Panel):
+    bl_label = "Face by Face"
+    bl_idname = "UNDERWHERE_PT_faces"
+    bl_parent_id = "UNDERWHERE_PT_review"
+    bl_options = {'DEFAULT_CLOSED'}
+
+    def draw(self, context):
+        s = context.scene.underwhere
+        report = current_report(context)
+        layout = self.layout
+        layout.enabled = not s.status.startswith("STALE")
         if s.issues:
             layout.template_list('UNDERWHERE_UL_issues', '', s, 'issues', s, 'issue_index', rows=4)
         else:
@@ -1012,53 +1215,7 @@ class UNDERWHERE_PT_review(ResultPanel, Panel):
         row.operator("underwhere.face", text="Select", icon='RESTRICT_SELECT_OFF').action = 'SELECT'
         row.operator("underwhere.face", text="Next", icon='TRIA_RIGHT').action = 'NEXT'
         row.operator("underwhere.face", text="View Ray", icon='HIDE_OFF').action = 'VIEW'
-
-        reasons = review_reason_counts(report)
-        if reasons:
-            layout.label(text="Select in bulk")
-            column = layout.column(align=True)
-            review_count = report["counts"].get(REVIEW, 0)
-            if review_count:
-                column.operator("underwhere.select_group", text=f"All Review ({review_count})",
-                                icon='RESTRICT_SELECT_OFF').group = 'REVIEW'
-            existing_count = sum(report["findings"].values())
-            if existing_count:
-                column.operator("underwhere.select_group",
-                                text=f"Existing mask issues ({existing_count})",
-                                icon='RESTRICT_SELECT_OFF').group = 'EXISTING'
-            for code, count in reasons[:8]:
-                op = column.operator("underwhere.select_group",
-                                     text=f"{reason_label(code)} ({count})", icon='DOT')
-                op.group = 'REASON'
-                op.reason = code
-
-        layout.label(text="Fix faces")
-        box = layout.box()
-        box.prop(s, "selection_target", expand=True)
-        row = box.row(align=True)
-        row.scale_y = 1.2
-        for tool, caption, icon in [('BOX', "Box", 'SELECT_SET'), ('LASSO', "Lasso", 'CURVE_BEZCURVE'),
-                                    ('CIRCLE', "Brush", 'BRUSH_DATA')]:
-            op = row.operator("underwhere.edit_selection", text=caption, icon=icon)
-            op.target = s.selection_target
-            op.tool = tool
-        box.label(text="Drag to select; Shift adds, Ctrl removes", icon='INFO')
-        box.prop(s, "override_review_only")
-        row = box.row(align=True)
-        for action, caption, icon in [('KEEP', "Keep", 'HIDE_OFF'), ('HIDE', "Hide", 'HIDE_ON'),
-                                      ('RESET', "Clear", 'X')]:
-            op = row.operator("underwhere.override", text=caption, icon=icon)
-            op.action = action
-            op.review_only = s.override_review_only
-
-        if report["input"]["mode"] == "AUDIT":
-            policy = report["output_plan"].get("repair_policy") or RESTORE_UNRESOLVED
-            layout.label(text="Repair existing mask")
-            column = layout.column(align=True)
-            for value, caption in [(RESTORE_UNRESOLVED, "Restore exposed + undecided"),
-                                   (RESTORE_EXPOSED, "Restore exposed only")]:
-                column.operator("underwhere.repair_policy", text=caption,
-                                depress=policy == value).policy = value
+        layout.label(text="Select puts the face on the Body; then Keep / Hide above", icon='INFO')
 
 
 class UNDERWHERE_PT_output(ResultPanel, Panel):
@@ -1257,9 +1414,11 @@ CLASSES = (
     UNDERWHERE_OT_preflight, UNDERWHERE_OT_analyze, UNDERWHERE_OT_cancel,
     UNDERWHERE_OT_preview, UNDERWHERE_OT_face, UNDERWHERE_OT_override, UNDERWHERE_OT_apply,
     UNDERWHERE_OT_export, UNDERWHERE_OT_repair_policy, UNDERWHERE_OT_select_group,
-    UNDERWHERE_OT_edit_selection, UNDERWHERE_UL_occluders, UNDERWHERE_UL_issues,
+    UNDERWHERE_OT_edit_selection, UNDERWHERE_OT_finish_selection,
+    UNDERWHERE_UL_occluders, UNDERWHERE_UL_issues,
     UNDERWHERE_PT_main, UNDERWHERE_PT_inputs, UNDERWHERE_PT_inspection, UNDERWHERE_PT_materials,
-    UNDERWHERE_PT_advanced, UNDERWHERE_PT_results, UNDERWHERE_PT_review, UNDERWHERE_PT_output,
+    UNDERWHERE_PT_advanced, UNDERWHERE_PT_results, UNDERWHERE_PT_review,
+    UNDERWHERE_PT_reasons, UNDERWHERE_PT_faces, UNDERWHERE_PT_output,
 )
 
 HANDLERS = [(bpy.app.handlers.load_pre, stop_jobs), (bpy.app.handlers.load_post, on_load),
