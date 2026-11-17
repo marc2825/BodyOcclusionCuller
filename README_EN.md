@@ -5,6 +5,7 @@
 
 [日本語](README.md) | [English](README_EN.md)
 
+![UnderWhere in Blender: the clothed avatar on the left and the color-coded comparison mesh on the right (green: hide candidates, blue: kept, yellow: undecided)](docs/images/teaser.png)
 
 UnderWhere is a Blender Extension that analyzes which faces of a body mesh are hidden beneath clothing and creates either a mask to hide those faces or a copy with them removed. It leaves the original Body untouched and highlights faces that should remain visible or could not be reliably classified. It works entirely offline.
 
@@ -20,8 +21,9 @@ In the 3D Viewport, press **N** to open the sidebar and select the UnderWhere ta
 
 1. Select the clothing and Body objects (select the Body last so that it is the active object), then click **Use Selection**.
 2. Check the inputs with **Preflight**, then run **Analyze**.
-3. Review the classification results and the number of faces actually hidden by the clothing. If necessary, make adjustments using **Keep / Hide / Clear**.
-4. Generate the output using **Apply to New Copy** (a copy with a visibility mask) or **Create Deleted Copy** (a copy with the selected faces removed). For FBX export to VRChat, use the latter.
+3. Click **Update Comparison** and review the classification on the colored comparison mesh shown to the right of the Body: green faces are hide candidates, blue faces are kept, and yellow faces could not be decided. Use Material Preview to see the colors.
+4. Check the number of faces actually hidden (**Output hides**). If necessary, make adjustments using **Keep / Hide / Clear**.
+5. Generate the output using **Apply to New Copy** (a copy with a visibility mask) or **Create Deleted Copy** (a copy with the selected faces removed). For FBX export to VRChat, use the latter.
 
 For more details, see the [User Guide](docs/user/OVERVIEW_EN.md). Japanese: [操作ガイド](docs/user/QUICKSTART_JA.md).
 

@@ -5,6 +5,7 @@
 
 [日本語](README.md) | [English](README_EN.md)
 
+![UnderWhere の画面。左が衣装を着たアバター、右が判定結果を色分けした比較メッシュ（緑：隠す候補、青：残す面、黄：判断できなかった面）](docs/images/teaser.png)
 
 衣装の下に隠れている身体メッシュの面を調べ、非表示用のマスクや、その面を削除したコピーを作る Blender Extension です。元の Body には手を加えず、隠すと見えてしまう面や判断できなかった面を表示します。オフラインで動作します。
 
@@ -18,8 +19,9 @@
 
 1. 衣装と Body を選択し（Body は最後に選んでアクティブにする）、**Use Selection** を押します。
 2. **Preflight** で入力を確認し、**Analyze** を実行します。
-3. 判定結果と実際に隠れる面数を確認し、必要なら **Keep / Hide / Clear** で修正します。
-4. **Apply to New Copy**（マスク付きのコピー）か **Create Deleted Copy**（面を削除したコピー）で出力します。VRChat 向けに FBX で書き出す場合は後者を使います。
+3. **Update Comparison** を押し、Body の右側に表示される比較メッシュで判定結果を確認します。緑は隠す候補、青は残す面、黄は判断できなかった面です。色はマテリアルプレビューで表示されます。
+4. 実際に隠れる面数（**Output hides**）を確認し、必要なら **Keep / Hide / Clear** で修正します。
+5. **Apply to New Copy**（マスク付きのコピー）か **Create Deleted Copy**（面を削除したコピー）で出力します。VRChat 向けに FBX で書き出す場合は後者を使います。
 
 詳しくは[操作ガイド](docs/user/QUICKSTART_JA.md)を参照してください。English: [overview](docs/user/OVERVIEW_EN.md)
 

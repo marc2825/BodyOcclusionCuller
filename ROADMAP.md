@@ -9,6 +9,7 @@
 - **日本語の UI**：ボタン名、判定の理由、警告を日本語で表示します。
 - **見えてしまう理由の表示**：隠すと欠けて見える視点へ View Ray で移動し、比較メッシュと並べて示します。
 - **複数オブジェクトの Body**：頭と胴体など、分かれた Body をまとめて検査します。
+- **更新の通知**：拡張機能リポジトリから配布し、新しい版が出たら Blender の Get Extensions に表示して、そこから更新できるようにします。まず GitHub Pages に専用のリポジトリを用意し、extensions.blender.org への公開も検討します。更新の確認は、Allow Online Access がオンのときに Blender 本体が行います。UnderWhere 自体はこれまでどおりネットワークに接続しません。
 
 ## 検討中
 
@@ -37,7 +38,7 @@
 
 Plans, not commitments; they will change with real-avatar testing and feedback.
 
-- **Next:** testing on real avatars, faster CPU sampling, Japanese UI, showing the view in which a hidden face would be seen, and Bodies split into several objects.
+- **Next:** testing on real avatars, faster CPU sampling, Japanese UI, showing the view in which a hidden face would be seen, Bodies split into several objects, and update notifications through an extension repository (GitHub Pages first, extensions.blender.org later; Blender checks for updates, the add-on itself stays offline).
 - **Considering:** body and clothing in one mesh, per-face output, alpha-clip materials, a GPU preview (not used for decisions), and a separate tool for body parts poking through clothing.
 - **New decision modes:** hiding only faces shown to be unseen from a declared range of camera positions, flagging faces that may appear in poses you did not inspect, and finding faces visible through narrow openings with less computation.
 - **Not planned:** automatically hiding Review faces, or claiming safety for every pose and view.
