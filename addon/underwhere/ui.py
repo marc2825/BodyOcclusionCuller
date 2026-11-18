@@ -126,28 +126,81 @@ def start_comparison_selection(context, obj, *, clear=True):
         bmesh.update_edit_mesh(obj.data)
 
 
+def editing_body(context, settings):
+    return (context.mode == 'EDIT_MESH' and context.edit_object is not None
+            and context.edit_object in adapter.body_objects(settings))
+
+
+def body_layout(settings):
+    """(object, first face index) for each Body object, matching the current result."""
+    bodies = adapter.body_objects(settings)
+    parts = adapter.body_parts(workflow.read_report(settings))
+    if len(parts) != len(bodies) or any(obj is None or len(obj.data.polygons) != part["face_count"]
+                                        for obj, part in zip(bodies, parts)):
+        raise adapter.InputError("STALE: Body objects changed; Analyze again")
+    return [(obj, part["face_offset"]) for obj, part in zip(bodies, parts)]
+
+
+def face_caption(report, index):
+    """'Face 12', or 'Head face 12' when the Body has several objects."""
+    parts = adapter.body_parts(report)
+    if len(parts) > 1:
+        for part in parts:
+            if part["face_offset"] <= index < part["face_offset"] + part["face_count"]:
+                return f"{part['name']} face {index - part['face_offset']}"
+    return f"Face {index}"
+
+
+def comparison_filter(settings):
+    return set(settings.preview_show) if settings.preview_mode == 'CLASSIFY' else None
+
+
+def draw_comparison(context, settings, report):
+    return adapter.preview(context, report, settings.preview_mode, show=comparison_filter(settings))
+
+
+def preview_filter_changed(self, context):
+    scene = getattr(context, "scene", None)
+    if scene is None or self.preview_mode != 'CLASSIFY' or adapter.current_preview(scene) is None:
+        return
+    try:
+        was_selecting = editing_comparison(context)
+        if was_selecting:
+            bpy.ops.object.mode_set(mode='OBJECT')
+        obj = draw_comparison(context, self, workflow.fresh_report(context, self, verify=False))
+        if was_selecting and obj is not None:
+            start_comparison_selection(context, obj)
+    except Exception as exc:  # A property update cannot report; show it in the status line.
+        self.status = str(exc)
+
+
 def select_body_faces(context, settings, indices):
-    """Select exactly `indices` on the configured Body in Edit Mode and frame them."""
+    """Select exactly `indices` (result face indices) on the Body objects in Edit Mode."""
     import bmesh
+    layout = body_layout(settings)
+    objects = [obj for obj, _ in layout]
     if context.mode == 'EDIT_MESH':
         # Leaving the comparison is harmless; any other mesh may hold user edits.
-        if context.edit_object != settings.body and not editing_comparison(context):
+        if context.edit_object not in objects and not editing_comparison(context):
             raise adapter.InputError(leave_other_edit_mode_message(context))
         bpy.ops.object.mode_set(mode='OBJECT')
     for obj in context.selected_objects:
         obj.select_set(False)
-    settings.body.select_set(True)
-    context.view_layer.objects.active = settings.body
+    for obj in objects:
+        obj.select_set(True)
+    context.view_layer.objects.active = objects[0]
     context.tool_settings.mesh_select_mode = (False, False, True)
-    bpy.ops.object.mode_set(mode='EDIT')
-    mesh = bmesh.from_edit_mesh(settings.body.data)
-    for element in list(mesh.verts) + list(mesh.edges) + list(mesh.faces):
-        element.select_set(False)
-    mesh.faces.ensure_lookup_table()
-    for index in indices:
-        mesh.faces[index].select_set(True)
-    mesh.select_flush_mode()
-    bmesh.update_edit_mesh(settings.body.data)
+    bpy.ops.object.mode_set(mode='EDIT')  # Several selected meshes enter Edit Mode together.
+    wanted = set(indices)
+    for obj, offset in layout:
+        mesh = bmesh.from_edit_mesh(obj.data)
+        for element in list(mesh.verts) + list(mesh.edges) + list(mesh.faces):
+            element.select_set(False)
+        for face in mesh.faces:
+            if offset + face.index in wanted:
+                face.select_set(True)
+        mesh.select_flush_mode()
+        bmesh.update_edit_mesh(obj.data)
     if context.space_data and context.space_data.type == 'VIEW_3D' and indices:
         region = next((r for r in context.area.regions if r.type == 'WINDOW'), None)
         if region:
@@ -202,6 +255,12 @@ class UNDERWHERE_Occluder(PropertyGroup):
 
 class UNDERWHERE_Settings(PropertyGroup):
     body: PointerProperty(name="Body", type=bpy.types.Object, poll=mesh_poll, update=input_changed)
+    use_extra_bodies: BoolProperty(
+        name="Body has several objects", update=input_changed,
+        description="Also inspect separate Body objects such as a head; each gets its own output copy. "
+                    "Body objects do not hide each other, only the occluders do")
+    extra_bodies: CollectionProperty(type=UNDERWHERE_Occluder)
+    extra_body_index: IntProperty(default=0)
     occluders: CollectionProperty(type=UNDERWHERE_Occluder)
     occluder_index: IntProperty(default=0)
     mode: EnumProperty(name="Mode", items=[
@@ -248,8 +307,20 @@ class UNDERWHERE_Settings(PropertyGroup):
         ('ORIGINAL', "Unmasked", "Show the unmasked sampled geometry beside the source"),
         ('OUTPUT', "Output", "Show the proposed vertex Mask output beside the source"),
         ('DIFF', "Before / After", "Color faces by how the output changes the existing mask"),
+        ('POSES', "Poses", "Color faces by the share of inspected frames in which they were hidden"),
         ('OFF', "Off", "Remove comparison objects"),
     ], default='CLASSIFY')
+    preview_show: EnumProperty(name="Show", options={'ENUM_FLAG'}, items=[
+        ('HIDE_CANDIDATE', "Candidate", "Show hide candidates on the comparison"),
+        ('KEEP_EXPOSED', "Keep", "Show faces seen in an inspected state"),
+        ('REVIEW', "Review", "Show undecided faces"),
+        ('UNSAFE_EXISTING_MASK', "Mask hides exposed", "Show faces the existing mask hides although they are seen"),
+        ('UNCERTAIN_EXISTING_MASK', "Mask hides undecided", "Show faces the existing mask hides although undecided"),
+        ('MANUAL_HIDE', "Hidden by you", "Show faces you set to Hide"),
+        ('MANUAL_KEEP', "Kept by you", "Show faces you set to Keep"),
+    ], default={'HIDE_CANDIDATE', 'KEEP_EXPOSED', 'REVIEW', 'UNSAFE_EXISTING_MASK',
+                'UNCERTAIN_EXISTING_MASK', 'MANUAL_HIDE', 'MANUAL_KEEP'},
+        update=preview_filter_changed)
 
 
 class SafeOperator:
@@ -279,8 +350,9 @@ class UNDERWHERE_OT_setup(SafeOperator, Operator):
             s = context.scene.underwhere
             s.body = body
             s.occluders.clear()
+            parts = set(adapter.body_objects(s)[1:])
             for obj in context.selected_objects:
-                if obj != body and mesh_poll(None, obj):
+                if obj != body and obj not in parts and mesh_poll(None, obj):
                     s.occluders.add().object = obj
             return {'FINISHED'}
         except Exception as exc:
@@ -304,6 +376,35 @@ class UNDERWHERE_OT_occluder(SafeOperator, Operator):
                     s.occluder_index = max(0, min(s.occluder_index, len(s.occluders) - 1))
             else:
                 s.occluders.add()
+            input_changed(s, context)
+            return {'FINISHED'}
+        except Exception as exc:
+            return self.fail(context, exc)
+
+
+class UNDERWHERE_OT_body_part(SafeOperator, Operator):
+    bl_idname = "underwhere.body_part"
+    bl_label = "Edit Body Part List"
+    bl_description = ("Add the selected meshes that are not used yet (or an empty slot) as Body parts, "
+                      "or remove the chosen entry; Analyze again after changes")
+    bl_options = {'REGISTER', 'UNDO'}
+    remove: BoolProperty()
+
+    def execute(self, context):
+        try:
+            self.available(context)
+            s = context.scene.underwhere
+            if self.remove:
+                if 0 <= s.extra_body_index < len(s.extra_bodies):
+                    s.extra_bodies.remove(s.extra_body_index)
+                    s.extra_body_index = max(0, min(s.extra_body_index, len(s.extra_bodies) - 1))
+            else:
+                used = set(adapter.body_objects(s)) | {item.object for item in s.occluders}
+                fresh = [obj for obj in context.selected_objects
+                         if obj not in used and mesh_poll(None, obj)]
+                for obj in fresh or [None]:
+                    s.extra_bodies.add().object = obj
+                s.extra_body_index = len(s.extra_bodies) - 1
             input_changed(s, context)
             return {'FINISHED'}
         except Exception as exc:
@@ -470,7 +571,7 @@ class UNDERWHERE_OT_preview(SafeOperator, Operator):
                 adapter.clear_preview(context.scene)
             else:
                 report = workflow.fresh_report(context, s)
-                obj = adapter.preview(context, report, s.preview_mode)
+                obj = draw_comparison(context, s, report)
                 if was_selecting and obj is not None:
                     start_comparison_selection(context, obj)
             return {'FINISHED'}
@@ -540,7 +641,7 @@ def selecting_on(context, settings):
         return None
     if adapter.is_preview(context.edit_object):
         return 'COMPARISON'
-    return 'BODY' if context.edit_object == settings.body else None
+    return 'BODY' if context.edit_object in adapter.body_objects(settings) else None
 
 
 def active_selection_tool(context):
@@ -576,19 +677,19 @@ class UNDERWHERE_OT_edit_selection(SafeOperator, Operator):
             s = context.scene.underwhere
             workflow.fresh_report(context, s, verify=False)
             if self.target == 'BODY':
-                if context.edit_object != s.body:
+                if not editing_body(context, s):
                     select_body_faces(context, s, [])
             else:
                 obj = adapter.current_preview(context.scene)
                 if obj is None:
                     # Show the comparison instead of asking for another click.
-                    if context.mode == 'EDIT_MESH' and context.edit_object != s.body:
+                    if context.mode == 'EDIT_MESH' and not editing_body(context, s):
                         raise adapter.InputError(leave_other_edit_mode_message(context))
                     if s.preview_mode == 'OFF':
                         s.preview_mode = 'CLASSIFY'
-                    obj = adapter.preview(context, workflow.fresh_report(context, s), s.preview_mode)
+                    obj = draw_comparison(context, s, workflow.fresh_report(context, s))
                 if context.edit_object != obj:
-                    if context.mode == 'EDIT_MESH' and context.edit_object not in (s.body, None) \
+                    if context.mode == 'EDIT_MESH' and not editing_body(context, s) \
                             and not editing_comparison(context):
                         raise adapter.InputError(leave_other_edit_mode_message(context))
                     start_comparison_selection(context, obj)
@@ -697,7 +798,7 @@ class UNDERWHERE_OT_override(SafeOperator, Operator):
                     # Checked before leaving Edit Mode so the user can simply drag.
                     raise adapter.InputError("No faces selected: drag over the comparison first")
                 bpy.ops.object.mode_set(mode='OBJECT')
-            elif was_edit and context.edit_object != s.body:
+            elif was_edit and not editing_body(context, s):
                 raise adapter.InputError(leave_other_edit_mode_message(context))
             if was_edit:
                 bpy.ops.object.mode_set(mode='OBJECT')
@@ -706,7 +807,8 @@ class UNDERWHERE_OT_override(SafeOperator, Operator):
             if preview_indices is not None:
                 indices = preview_indices
             elif self.selected:
-                indices = [p.index for p in s.body.data.polygons if p.select]
+                indices = [offset + p.index for obj, offset in body_layout(s)
+                           for p in obj.data.polygons if p.select]
             else:
                 indices = [s.face_index]
             if not indices:
@@ -726,7 +828,7 @@ class UNDERWHERE_OT_override(SafeOperator, Operator):
             report["output_verification"] = adapter.measure_plan(context, s, report)
             workflow.save_report(s, report)
             if s.preview_mode != 'OFF' and (editing_preview or adapter.current_preview(context.scene)):
-                redrawn = adapter.preview(context, workflow.read_report(s), s.preview_mode)
+                redrawn = draw_comparison(context, s, workflow.read_report(s))
             else:
                 adapter.clear_preview(context.scene)
             caption = {'KEEP': "Keep", 'HIDE': "Hide", 'RESET': "Clear"}[self.action]
@@ -865,7 +967,11 @@ class UNDERWHERE_UL_occluders(UIList):
 
 class UNDERWHERE_UL_issues(UIList):
     def draw_item(self, context, layout, data, item, icon, active_data, active_propname, index):
-        layout.label(text=f"Face {item.face}: {reason_label(item.label)}", icon='ERROR')
+        try:
+            caption = face_caption(workflow.read_report(context.scene.underwhere), item.face)
+        except (adapter.InputError, KeyError):
+            caption = f"Face {item.face}"
+        layout.label(text=f"{caption}: {reason_label(item.label)}", icon='ERROR')
 
 
 def status_icon(status):
@@ -894,12 +1000,24 @@ def current_report(context):
         return None
 
 
+#: Classification legend; each entry also toggles that colour on the comparison.
+CLASSIFY_LEGEND = [
+    ("Candidate", 'COLLECTION_COLOR_04', 'HIDE_CANDIDATE'),
+    ("Keep", 'COLLECTION_COLOR_05', 'KEEP_EXPOSED'),
+    ("Review", 'COLLECTION_COLOR_03', 'REVIEW'),
+    ("Mask hides exposed", 'COLLECTION_COLOR_01', 'UNSAFE_EXISTING_MASK'),
+    ("Mask hides undecided", 'COLLECTION_COLOR_06', 'UNCERTAIN_EXISTING_MASK'),
+    ("Hidden by you", 'COLLECTION_COLOR_07', 'MANUAL_HIDE'),
+    ("Kept by you", 'OUTLINER_COLLECTION', 'MANUAL_KEEP'),
+]
+AUDIT_ONLY = {'UNSAFE_EXISTING_MASK', 'UNCERTAIN_EXISTING_MASK'}
+
 LEGENDS = {
-    'CLASSIFY': [("Candidate", 'COLLECTION_COLOR_04'), ("Keep", 'COLLECTION_COLOR_05'),
-                 ("Review", 'COLLECTION_COLOR_03'), ("Mask hides exposed", 'COLLECTION_COLOR_01'),
-                 ("Mask hides undecided", 'COLLECTION_COLOR_06')],
     'DIFF': [("Newly hidden", 'COLLECTION_COLOR_04'), ("Restored", 'COLLECTION_COLOR_05'),
              ("Still hidden", 'COLLECTION_COLOR_08'), ("Visible", 'OUTLINER_COLLECTION')],
+    'POSES': [("Hidden in all", 'COLLECTION_COLOR_04'), ("Hidden in 75%+", 'COLLECTION_COLOR_03'),
+              ("Hidden in 50%+", 'COLLECTION_COLOR_02'), ("Hidden in some", 'COLLECTION_COLOR_01'),
+              ("Never hidden", 'COLLECTION_COLOR_05'), ("Undecided", 'OUTLINER_COLLECTION')],
 }
 
 
@@ -945,6 +1063,15 @@ class UNDERWHERE_PT_inputs(SubPanel, Panel):
         layout.enabled = not is_busy(context)
         layout.operator("underwhere.use_selection", icon='RESTRICT_SELECT_OFF')
         layout.prop(s, "body")
+        layout.prop(s, "use_extra_bodies")
+        if s.use_extra_bodies:
+            row = layout.row()
+            row.template_list("UNDERWHERE_UL_occluders", "body_parts", s, "extra_bodies",
+                              s, "extra_body_index", rows=2)
+            buttons = row.column(align=True)
+            buttons.operator("underwhere.body_part", text="", icon='ADD')
+            buttons.operator("underwhere.body_part", text="", icon='REMOVE').remove = True
+            layout.label(text="+ adds the selected meshes; each part gets its own copy", icon='INFO')
         layout.label(text="Occluders")
         row = layout.row()
         row.template_list("UNDERWHERE_UL_occluders", "", s, "occluders", s, "occluder_index", rows=3)
@@ -1090,11 +1217,23 @@ class UNDERWHERE_PT_review(ResultPanel, Panel):
         row = column.row(align=True)
         row.prop(s, "preview_mode", text="")
         row.operator("underwhere.preview", text="Update Comparison", icon='FILE_REFRESH')
-        legend = LEGENDS.get(s.preview_mode)
-        if legend:
+        if s.preview_mode == 'CLASSIFY':
             grid = column.grid_flow(columns=2, even_columns=True, align=True)
-            for caption, icon in legend:
+            audit = report["input"]["mode"] == "AUDIT"
+            for caption, icon, key in CLASSIFY_LEGEND:
+                if audit or key not in AUDIT_ONLY:
+                    grid.prop_enum(s, "preview_show", key, text=caption, icon=icon)
+            column.label(text="Click a color to show or hide it", icon='RESTRICT_VIEW_OFF')
+        elif LEGENDS.get(s.preview_mode):
+            grid = column.grid_flow(columns=2, even_columns=True, align=True)
+            for caption, icon in LEGENDS[s.preview_mode]:
                 grid.label(text=caption, icon=icon)
+            if s.preview_mode == 'POSES':
+                states = len(report.get("sampled_states", []))
+                if states < 2:
+                    column.label(text="Inspect several frames to see shades", icon='ERROR')
+                else:
+                    column.label(text=f"Share of {states} inspected frames", icon='TIME')
         column.label(text="Shown beside the Body; use Material Preview", icon='INFO')
 
         layout.label(text="Fix faces")
@@ -1116,7 +1255,7 @@ class UNDERWHERE_PT_review(ResultPanel, Panel):
         if not selecting:
             hint.label(text="Press Box, Lasso or Brush to start", icon='INFO')
         else:
-            count = context.edit_object.data.total_face_sel
+            count = sum(obj.data.total_face_sel for obj in context.objects_in_mode if obj.type == 'MESH')
             where = "comparison" if selecting == 'COMPARISON' else "Body"
             if count:
                 hint.label(text=f"{count} faces selected on the {where}", icon='CHECKMARK')
@@ -1340,7 +1479,7 @@ def on_update(scene, depsgraph):
             pass
         scene.underwhere.status = "STALE: image/texture dependency changed"
     settings = scene.underwhere
-    objects = {settings.body} | {item.object for item in settings.occluders}
+    objects = set(adapter.body_objects(settings)) | {item.object for item in settings.occluders}
     objects.discard(None)
     rigs = {mod.object for obj in objects for mod in obj.modifiers if mod.type == 'ARMATURE'}
     data = {obj.data for obj in objects}
@@ -1411,6 +1550,7 @@ def freshness_timer():
 
 CLASSES = (
     UNDERWHERE_Issue, UNDERWHERE_Occluder, UNDERWHERE_Settings, UNDERWHERE_OT_setup, UNDERWHERE_OT_occluder,
+    UNDERWHERE_OT_body_part,
     UNDERWHERE_OT_preflight, UNDERWHERE_OT_analyze, UNDERWHERE_OT_cancel,
     UNDERWHERE_OT_preview, UNDERWHERE_OT_face, UNDERWHERE_OT_override, UNDERWHERE_OT_apply,
     UNDERWHERE_OT_export, UNDERWHERE_OT_repair_policy, UNDERWHERE_OT_select_group,

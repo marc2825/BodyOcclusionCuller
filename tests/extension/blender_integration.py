@@ -1008,6 +1008,11 @@ class BlenderIntegration(unittest.TestCase):
                 self._icon(icon)
                 self_test.assertIn(name, data.bl_rna.properties)
 
+            def prop_enum(self, data, name, value, icon='NONE', **kwargs):
+                self._icon(icon)
+                self_test.assertIn(name, data.bl_rna.properties)
+                self_test.assertIn(value, data.bl_rna.properties[name].enum_items.keys())
+
             def prop_search(self, data, name, search_data, search_name, icon='NONE', **kwargs):
                 self._icon(icon)
                 self_test.assertIn(name, data.bl_rna.properties)
@@ -1048,9 +1053,11 @@ class BlenderIntegration(unittest.TestCase):
         body, _, s = fx.setup()
         self.assertNotIn("UNDERWHERE_PT_results", draw_all())
         self.analyze(s)
-        for mode in ('CLASSIFY', 'DIFF', 'OUTPUT', 'ORIGINAL', 'OFF'):
+        s.use_extra_bodies = True  # draws the Body part list
+        for mode in ('CLASSIFY', 'DIFF', 'OUTPUT', 'ORIGINAL', 'POSES', 'OFF'):
             s.preview_mode = mode
             self.assertIn("UNDERWHERE_PT_output", draw_all())
+        s.use_extra_bodies = False
         fx.mask(body)
         self.analyze(s)
         draw_all()
@@ -1284,6 +1291,115 @@ class BlenderIntegration(unittest.TestCase):
                 bpy.ops.underwhere.edit_selection(target=target)
             self.assertEqual(bpy.context.edit_object, shell)
         bpy.ops.object.mode_set(mode='OBJECT')
+
+
+    def preview_labels(self):
+        preview = adapter.current_preview(bpy.context.scene)
+        names = [preview.data.materials[p.material_index].name for p in preview.data.polygons]
+        return [name.removeprefix("UnderWhere_View_").split(".")[0] for name in names]
+
+    def test_69_manual_keep_hide_have_their_own_colors_and_colors_can_be_hidden(self):
+        import bmesh
+        _, _, s = fx.setup(alpha=.5)  # every face Review for an untrusted material
+        self.analyze(s)
+        s.preview_mode = 'CLASSIFY'
+        bpy.ops.underwhere.preview()
+        self.assertEqual(set(self.preview_labels()), {"REVIEW"})
+        s.face_index = 0
+        bpy.ops.underwhere.override('EXEC_DEFAULT', action='HIDE', selected=False)
+        s.face_index = 1
+        bpy.ops.underwhere.override('EXEC_DEFAULT', action='KEEP', selected=False)
+        # Your Keep / Hide recolor the comparison; the evidence itself is unchanged.
+        self.assertEqual(self.preview_labels()[:2], ["MANUAL_HIDE", "MANUAL_KEEP"])
+        self.assertEqual(workflow.read_report(s)["faces"][0]["verdict"], REVIEW)
+        # Turning colors off redraws the comparison with only the shown faces.
+        s.preview_show = {'MANUAL_HIDE'}
+        preview = adapter.current_preview(bpy.context.scene)
+        self.assertEqual(list(preview["underwhere_face_map"]), [0])
+        self.assertEqual(self.preview_labels(), ["MANUAL_HIDE"])
+        s.preview_show = {'REVIEW', 'MANUAL_KEEP'}
+        self.assertEqual(list(adapter.current_preview(bpy.context.scene)["underwhere_face_map"]),
+                         [1, 2, 3, 4, 5])
+        # Region selection on a filtered comparison still maps to the Body faces.
+        bpy.ops.underwhere.edit_selection(target='COMPARISON')
+        preview = adapter.current_preview(bpy.context.scene)
+        mesh = bmesh.from_edit_mesh(preview.data)
+        for face in mesh.faces:
+            face.select_set(True)
+        bmesh.update_edit_mesh(preview.data)
+        bpy.ops.underwhere.override('EXEC_DEFAULT', action='RESET')
+        self.assertEqual(workflow.read_report(s)["overrides"], {"0": "HIDE"})
+        bpy.ops.underwhere.finish_selection()
+
+    def test_70_body_split_into_several_objects(self):
+        body, shell, s = fx.setup()  # closed opaque shell around the Body
+        head = fx.cube("FixtureHead", .05)
+        head.location.z = .5
+        s.use_extra_bodies = True
+        bpy.ops.object.select_all(action='DESELECT')
+        head.select_set(True)
+        bpy.ops.underwhere.body_part()
+        self.assertEqual([item.object for item in s.extra_bodies], [head])
+        report = self.analyze(s)
+        self.assertEqual(report["counts"], {CANDIDATE: 12})
+        self.assertEqual([(p["name"], p["face_offset"], p["face_count"])
+                          for p in report["input"]["body_parts"]],
+                         [("FixtureBody", 0, 6), ("FixtureHead", 6, 6)])
+        self.assertEqual(ui.face_caption(report, 7), "FixtureHead face 1")
+        # Selecting on the Body edits every Body object together.
+        bpy.ops.underwhere.edit_selection(target='BODY')
+        self.assertEqual(set(bpy.context.objects_in_mode), {body, head})
+        bpy.ops.mesh.select_all(action='SELECT')
+        bpy.ops.underwhere.override('EXEC_DEFAULT', action='KEEP', review_only=False)
+        self.assertEqual(len(workflow.read_report(s)["overrides"]), 12)
+        bpy.ops.underwhere.override('EXEC_DEFAULT', action='RESET')
+        bpy.ops.underwhere.finish_selection()
+        s.face_index = 0
+        bpy.ops.underwhere.face(action='SELECT')  # face 0 lives on the Body
+        self.assertEqual(body.data.total_face_sel, 1)
+        self.assertEqual(head.data.total_face_sel, 0)
+        bpy.ops.object.mode_set(mode='OBJECT')
+        # One output copy per Body object, each with its own share of the plan.
+        before = set(bpy.data.objects)
+        self.assertEqual(bpy.ops.underwhere.apply(), {'FINISHED'})
+        created = {obj.name for obj in set(bpy.data.objects) - before}
+        self.assertEqual(created, {"UnderWhere_Result_FixtureBody", "UnderWhere_Result_FixtureHead"})
+        for name in created:
+            self.assertEqual(adapter.evaluated_counts(bpy.context, bpy.data.objects[name]), (0, 0))
+        self.assertEqual(len(body.data.polygons), 6)  # sources untouched
+        # The comparison shows both parts beside the Body.
+        bpy.ops.underwhere.preview()
+        self.assertEqual(len(adapter.current_preview(bpy.context.scene).data.polygons), 12)
+        # A Body part cannot also be an occluder, and Audit stays one object at a time.
+        s.extra_bodies.add().object = shell
+        with self.assertRaisesRegex(adapter.InputError, "DUPLICATE"):
+            adapter.snapshot(bpy.context, s)
+        s.extra_bodies.remove(len(s.extra_bodies) - 1)
+        s.mode = 'AUDIT'
+        with self.assertRaisesRegex(adapter.InputError, "MULTI_BODY_AUDIT_UNSUPPORTED"):
+            adapter.snapshot(bpy.context, s)
+
+    def test_71_poses_mode_shows_the_share_of_frames_that_hide_each_face(self):
+        _, shell, s = fx.setup()
+        scene = bpy.context.scene
+        shell.keyframe_insert("location", frame=1)
+        shell.location.x = 5  # frame 2: the clothing has moved away
+        shell.keyframe_insert("location", frame=2)
+        scene.frame_set(1)
+        s.scope = 'EXPLICIT_FRAMES'
+        s.frames = "2"
+        report = self.analyze(s)
+        self.assertEqual(len(report["sampled_states"]), 2)
+        # Exposed in one frame is enough to keep the face (strict union).
+        self.assertEqual(report["counts"], {KEEP: 6})
+        self.assertEqual({(f["hidden_states"], f["exposed_states"]) for f in report["faces"]}, {(1, 1)})
+        s.preview_mode = 'POSES'
+        bpy.ops.underwhere.preview()
+        self.assertEqual(set(self.preview_labels()), {"POSES_HALF"})
+        self.assertEqual(adapter.poses_label(1.0), "POSES_ALL")
+        self.assertEqual(adapter.poses_label(.8), "POSES_MOST")
+        self.assertEqual(adapter.poses_label(.3), "POSES_FEW")
+        self.assertEqual(adapter.poses_label(0.0), "POSES_NONE")
 
 
 if __name__ == "__main__":

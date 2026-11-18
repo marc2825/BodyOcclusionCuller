@@ -132,18 +132,40 @@ def settings_record(settings, scene):
             "directions": "FULL_SPHERE_GEOMETRIC", "max_subdivision_depth": 4}
 
 
+def body_objects(settings):
+    """The Body and, when enabled, its extra parts in list order (None for empty slots)."""
+    extra = [item.object for item in settings.extra_bodies] if settings.use_extra_bodies else []
+    return [settings.body] + extra
+
+
+def body_parts(report):
+    """Face/vertex ranges of each Body object inside the combined analysis surface."""
+    parts = report["input"].get("body_parts")
+    if parts:
+        return parts
+    return [{"name": report["input"]["body"], "face_offset": 0, "face_count": len(report["faces"]),
+             "vertex_offset": 0, "vertex_count": len(report["preview_vertices"])}]
+
+
 def inputs(context, settings):
     if context.mode != 'OBJECT':
         raise InputError("OBJECT_MODE_REQUIRED: switch to Object Mode before analysis/output")
-    body = settings.body
+    bodies = body_objects(settings)
+    body = bodies[0]
     if body is None or body.type != 'MESH':
         raise InputError("BODY_MESH_REQUIRED")
+    if any(part is None for part in bodies[1:]):
+        raise InputError("BODY_PART_REQUIRED: remove empty Body part entries")
     occluders = [item.object for item in settings.occluders]
     if not occluders or any(o is None for o in occluders):
         raise InputError("OCCLUDER_MESH_REQUIRED: remove empty entries")
-    if body in occluders or len(set(occluders)) != len(occluders):
+    if any(part in occluders for part in bodies) or len(set(occluders)) != len(occluders):
         raise InputError("DUPLICATE_OBJECT: Body cannot also be an occluder")
-    for obj in [body] + occluders:
+    if len(set(bodies)) != len(bodies):
+        raise InputError("DUPLICATE_OBJECT: a Body part is listed twice")
+    if len(bodies) > 1 and settings.mode == 'AUDIT':
+        raise InputError("MULTI_BODY_AUDIT_UNSUPPORTED: Audit one Body object at a time")
+    for obj in bodies + occluders:
         if obj.type != 'MESH' or not obj.data.polygons:
             raise InputError(f"EMPTY_OR_NON_MESH: {obj.name}")
         if obj.library or obj.data.library or obj.override_library or not obj.is_editable:
@@ -179,17 +201,44 @@ def inputs(context, settings):
             raise InputError("MASK_VISIBILITY_MISMATCH: viewport and render flags must agree")
         if list(body.modifiers)[-1] != target:
             raise InputError("MASK_MUST_BE_LAST: preceding Armature deformation is supported")
-    for obj in [body] + occluders:
+    for obj in bodies + occluders:
         for modifier in obj.modifiers:
             if obj == body and modifier == target:
                 continue
             # Disabled unknown modifiers also refuse: the output must not become
             # silently different when switched on for rendering or later editing.
-            if modifier.type != 'ARMATURE' and not (obj != body and modifier.type == 'SOLIDIFY'):
+            if modifier.type != 'ARMATURE' and not (obj not in bodies and modifier.type == 'SOLIDIFY'):
                 raise InputError(f"MODIFIER_UNSUPPORTED: {obj.name}/{modifier.name} ({modifier.type})")
             if modifier.show_viewport != modifier.show_render:
                 raise InputError(f"MODIFIER_VISIBILITY_MISMATCH: {modifier.name}")
-    return body, occluders, target
+    return bodies, occluders, target
+
+
+def combine_bodies(parts):
+    """One analysis surface for every Body object; indices are offset in list order.
+
+    Body parts never occlude each other: only the listed clothing blocks rays,
+    which can only leave more faces visible, never fewer."""
+    vertices, polygons, triangles, records = [], [], [], []
+    for part in parts:
+        vertex_offset, face_offset = len(vertices), len(polygons)
+        records.append({"name": part["name"], "mesh": part["mesh"],
+                        "face_offset": face_offset, "face_count": len(part["polygons"]),
+                        "vertex_offset": vertex_offset, "vertex_count": len(part["vertices"])})
+        vertices.extend(part["vertices"])
+        polygons.extend([vertex_offset + i for i in polygon] for polygon in part["polygons"])
+        triangles.extend((face_offset + face, [vertex_offset + i for i in tri])
+                         for face, tri in part["triangles"])
+    if len(parts) == 1:
+        body = dict(parts[0])
+    else:
+        body = {"name": parts[0]["name"], "mesh": parts[0]["mesh"],
+                "vertices": vertices, "polygons": polygons, "triangles": triangles,
+                # Every other input (weights, shape keys, rigs...) stays fingerprinted.
+                "inputs": [{key: value for key, value in part.items()
+                            if key not in ("vertices", "polygons", "triangles")} for part in parts]}
+    body["parts"] = records
+    return body
 
 
 @contextmanager
@@ -298,14 +347,17 @@ def evaluated_counts(context, obj):
 
 
 def snapshot(context, settings):
-    body, occluders, target = inputs(context, settings)
+    bodies, occluders, target = inputs(context, settings)
+    body = bodies[0]
     target_record = rna_values(target) if target else None
     with unmasked(context, target):
         depsgraph = context.evaluated_depsgraph_get()
-        bdata = geometry(body, depsgraph)
+        parts = [geometry(part, depsgraph) for part in bodies]
         odata = [occluder_geometry(context, o) for o in occluders]
     # Hash original flags, not the temporary disabled state.
-    bdata["modifiers"] = [rna_values(m) for m in body.modifiers]
+    for part, obj in zip(parts, bodies):
+        part["modifiers"] = [rna_values(m) for m in obj.modifiers]
+    bdata = combine_bodies(parts)
     existing = {"name": None, "hidden_faces": [], "settings": None}
     if target:
         group = body.vertex_groups[target.vertex_group]
@@ -333,7 +385,7 @@ def snapshot(context, settings):
 
 def visibility_signature(context, settings):
     """No evaluated meshes; catches visibility switches missed by depsgraph flags."""
-    objects = [settings.body] + [item.object for item in settings.occluders]
+    objects = body_objects(settings) + [item.object for item in settings.occluders]
     flags = []
     for obj in objects:
         flags.append(None if obj is None else (
@@ -366,9 +418,40 @@ def link_to_source(duplicate, body):
 
 
 def apply_duplicate(context, settings, report, *, deleted=False):
-    """Transactional copy. Source, original groups and original masks stay intact."""
-    body, _, target = inputs(context, settings)
+    """Transactional copies, one per Body object. Sources, groups and masks stay intact."""
+    bodies, _, target = inputs(context, settings)
     plan = output_plan(report)
+    parts = body_parts(report)
+    if len(parts) != len(bodies) or any(
+            part["face_count"] != len(obj.data.polygons) for part, obj in zip(parts, bodies)):
+        raise InputError("STALE: Body objects changed; Analyze again")
+    created = []
+    try:
+        for obj, part in zip(bodies, parts):
+            created.append(duplicate_part(context, obj, target if obj == bodies[0] else None,
+                                          report, plan, part, deleted))
+    except Exception:
+        for name in created:
+            remove_owned(bpy.data.objects[name["object"]])
+        raise
+    return {"object": created[0]["object"], "objects": [item["object"] for item in created],
+            "group": created[0]["group"],
+            "modifier": None if deleted else created[0]["modifier"],
+            "kind": "DELETED_COPY" if deleted else "MASK_COPY",
+            "evaluated_remaining_polygons": sum(item["counts"][0] for item in created),
+            "evaluated_remaining_triangles": sum(item["counts"][1] for item in created),
+            "plan": plan}
+
+
+def duplicate_part(context, body, target, report, plan, part, deleted):
+    face_offset, face_count = part["face_offset"], part["face_count"]
+    vertex_offset, vertex_count = part["vertex_offset"], part["vertex_count"]
+    removed = [v - vertex_offset for v in plan["removed_vertices"]
+               if vertex_offset <= v < vertex_offset + vertex_count]
+    hidden = {f for f in plan["hidden_faces"] if face_offset <= f < face_offset + face_count}
+    faces = report["faces"][face_offset:face_offset + face_count]
+    expected = (face_count - len(hidden),
+                sum(f["triangles"] for f in faces if f["face"] not in hidden))
     duplicate = body.copy()
     try:
         duplicate.data = body.data.copy()
@@ -378,8 +461,8 @@ def apply_duplicate(context, settings, report, *, deleted=False):
         if target:
             duplicate.modifiers.remove(duplicate.modifiers[target.name])
         group = duplicate.vertex_groups.new(name="UnderWhere_Hide")
-        if plan["removed_vertices"]:
-            group.add(plan["removed_vertices"], 1.0, 'REPLACE')
+        if removed:
+            group.add(removed, 1.0, 'REPLACE')
         mod = duplicate.modifiers.new("UnderWhere_Mask", 'MASK')
         mod.mode = 'VERTEX_GROUP'
         mod.vertex_group = group.name
@@ -389,8 +472,6 @@ def apply_duplicate(context, settings, report, *, deleted=False):
         modifier_name = mod.name
         context.view_layer.update()
         counts = evaluated_counts(context, duplicate)
-        expected = (len(report["faces"]) - plan["hidden_polygon_count"],
-                    sum(f["triangles"] for f in report["faces"]) - plan["hidden_triangle_count"])
         if counts != expected:
             raise InputError(f"OUTPUT_EVALUATION_MISMATCH: expected {expected}, evaluated {counts}")
         if deleted:
@@ -402,8 +483,7 @@ def apply_duplicate(context, settings, report, *, deleted=False):
             try:
                 bm.from_mesh(duplicate.data)
                 bm.verts.ensure_lookup_table()
-                bmesh.ops.delete(bm, geom=[bm.verts[i] for i in plan['removed_vertices']],
-                                 context='VERTS')
+                bmesh.ops.delete(bm, geom=[bm.verts[i] for i in removed], context='VERTS')
                 bm.to_mesh(duplicate.data)
                 duplicate.data.update()
             finally:
@@ -411,11 +491,8 @@ def apply_duplicate(context, settings, report, *, deleted=False):
             counts = evaluated_counts(context, duplicate)
             if counts != expected:
                 raise InputError("DELETED_COPY_EVALUATION_MISMATCH")
-        return {"object": duplicate.name, "group": group.name,
-                "modifier": None if deleted else modifier_name,
-                "kind": "DELETED_COPY" if deleted else "MASK_COPY",
-                "evaluated_remaining_polygons": counts[0],
-                "evaluated_remaining_triangles": counts[1], "plan": plan}
+        return {"object": duplicate.name, "group": group.name, "modifier": modifier_name,
+                "counts": counts}
     except Exception:
         remove_owned(duplicate)
         raise
@@ -432,7 +509,8 @@ def measure_plan(context, settings, report):
             "remaining_triangles": output["evaluated_remaining_triangles"],
         }
     finally:
-        remove_owned(bpy.data.objects[output["object"]])
+        for name in output["objects"]:
+            remove_owned(bpy.data.objects[name])
 
 
 COLORS = {
@@ -447,13 +525,67 @@ COLORS = {
     "DIFF_RESTORED": (0.1, 0.5, 1.0, 1.0),
     "DIFF_NEWLY_HIDDEN": (0.1, 0.8, 0.3, 1.0),
     "DIFF_VISIBLE": (0.8, 0.8, 0.8, 1.0),
+    # Classification: your Keep / Hide, shown instead of the evidence colour.
+    "MANUAL_HIDE": (0.95, 0.3, 0.7, 1.0),
+    "MANUAL_KEEP": (0.92, 0.92, 0.92, 1.0),
+    # Poses: share of inspected states in which the face was hidden.
+    "POSES_ALL": (0.1, 0.8, 0.3, 1.0),
+    "POSES_MOST": (1.0, 0.85, 0.1, 1.0),
+    "POSES_HALF": (1.0, 0.45, 0.05, 1.0),
+    "POSES_FEW": (0.9, 0.12, 0.12, 1.0),
+    "POSES_NONE": (0.1, 0.5, 1.0, 1.0),
+    "POSES_UNDECIDED": (0.55, 0.55, 0.55, 1.0),
 }
+
+#: Classification labels a viewer can show or hide on the comparison.
+CLASSIFY_LABELS = ("HIDE_CANDIDATE", "KEEP_EXPOSED", "REVIEW", "UNSAFE_EXISTING_MASK",
+                   "UNCERTAIN_EXISTING_MASK", "MANUAL_HIDE", "MANUAL_KEEP")
 
 
 def diff_label(face, before, after):
     if face in before:
         return "DIFF_STILL_HIDDEN" if face in after else "DIFF_RESTORED"
     return "DIFF_NEWLY_HIDDEN" if face in after else "DIFF_VISIBLE"
+
+
+def classify_label(face, overrides):
+    manual = overrides.get(str(face["face"]))
+    if manual == "HIDE":
+        return "MANUAL_HIDE"
+    if manual == "KEEP":
+        return "MANUAL_KEEP"
+    return face["finding"] or face["verdict"]
+
+
+def hidden_share(face, report):
+    """Fraction of inspected states in which this face was a hide candidate."""
+    states = max(len(report.get("sampled_states", [])), 1)
+    hidden = face.get("hidden_states", 1 if face["verdict"] == "HIDE_CANDIDATE" else 0)
+    return hidden / states
+
+
+def poses_label(share):
+    if share >= 1.0:
+        return "POSES_ALL"
+    if share >= 0.75:
+        return "POSES_MOST"
+    if share >= 0.5:
+        return "POSES_HALF"
+    return "POSES_FEW" if share > 0.0 else "POSES_NONE"
+
+
+def face_label(face, report, mode, before, after):
+    if mode == 'CLASSIFY':
+        return classify_label(face, report.get("overrides", {}))
+    if mode == 'DIFF':
+        return diff_label(face["face"], before, after)
+    if mode == 'POSES':
+        share = hidden_share(face, report)
+        # Never hidden and never seen: undecided in every state, not "visible".
+        if share == 0.0 and face.get("exposed_states", 0) == 0 and face["verdict"] == "REVIEW":
+            return "POSES_UNDECIDED"
+        return poses_label(share)
+    return "ORIGINAL"
 
 
 def current_preview(scene):
@@ -482,14 +614,18 @@ def clear_preview(scene):
             bpy.data.materials.remove(mat)
 
 
-def preview(context, report, mode):
+def preview(context, report, mode, show=None):
+    """Draw the comparison; `show` limits Classification to those labels."""
     clear_preview(context.scene)
     if mode == 'OFF':
         return None
     plan = output_plan(report)
-    hidden = set(plan["hidden_faces"]) if mode == 'OUTPUT' else set()
     before = set(report["existing_mask"]["hidden_faces"])
     after = set(plan["hidden_faces"])
+    labels = {f["face"]: face_label(f, report, mode, before, after) for f in report["faces"]}
+    hidden = set(plan["hidden_faces"]) if mode == 'OUTPUT' else set()
+    if mode == 'CLASSIFY' and show is not None:
+        hidden |= {face for face, label in labels.items() if label not in show}
     vertices = report["preview_vertices"]
     # Compare alongside the source without touching its visibility or transforms.
     offset = report["preview_offset_x"]
@@ -517,13 +653,7 @@ def preview(context, report, mode):
             mesh.materials.append(mat)
         visible = [f for f in report["faces"] if f["face"] not in hidden]
         for poly, face in zip(mesh.polygons, visible):
-            if mode == 'CLASSIFY':
-                label = face["finding"] or face["verdict"]
-            elif mode == 'DIFF':
-                label = diff_label(face["face"], before, after)
-            else:
-                label = "ORIGINAL"
-            poly.material_index = names.index(label)
+            poly.material_index = names.index(labels[face["face"]])
         return obj
     except Exception:
         if obj:

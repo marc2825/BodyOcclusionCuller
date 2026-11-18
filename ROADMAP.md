@@ -4,12 +4,13 @@
 
 ## 次の版で取り組むこと
 
-- **実際のアバターでの検証**：判定の妥当性と処理時間を確かめ、結果を文書に反映します。
+- **様々な実アバターでの検証**：判定の妥当性と処理時間を確かめ、頑健性の向上を目指します。
 - **処理の高速化**：CPU のまま、サンプリングの計算をまとめて速くします。
 - **日本語の UI**：ボタン名、判定の理由、警告を日本語で表示します。
-- **見えてしまう理由の表示**：隠すと欠けて見える視点へ View Ray で移動し、比較メッシュと並べて示します。
-- **複数オブジェクトの Body**：頭と胴体など、分かれた Body をまとめて検査します。
-- **更新の通知**：拡張機能リポジトリから配布し、新しい版が出たら Blender の Get Extensions に表示して、そこから更新できるようにします。まず GitHub Pages に専用のリポジトリを用意し、extensions.blender.org への公開も検討します。更新の確認は、Allow Online Access がオンのときに Blender 本体が行います。UnderWhere 自体はこれまでどおりネットワークに接続しません。
+- **残す根拠の可視化**：残すと判定した面が実際に見える視点へ View Ray で移動し、比較メッシュと並べて確認できるようにします。
+- **更新の通知**：拡張機能リポジトリから配布し、新しい版が出たら Blender の Get Extensions に表示して、そこから更新できるようにします。（案：まず GitHub Pages に専用のリポジトリを用意し、extensions.blender.org への公開も検討します。更新の確認は、Allow Online Access がオンのときに Blender 本体が行います。UnderWhere 自体はこれまでどおりネットワークに接続しません。）
+- **BOOTH での頒布**：GitHub Releases に加えて、BOOTH でも入手できるようにします。
+- **デモ動画の撮影**：操作方法を中心に、使い方を紹介する動画を作ります。
 
 ## 検討中
 
@@ -18,6 +19,7 @@
 - アルファクリップ（切り抜き）素材の判定
 - GPU による高速なプレビュー（判定の根拠には使いません）
 - 衣装を突き抜ける身体の修正。身体の形を変える操作なので、非表示の判定とは別の機能として扱います。
+- 判定の根拠の説明可能性
 
 ## 新しい判定方式
 
@@ -30,15 +32,42 @@
 ## 予定していないこと
 
 - Review の面を自動で隠す設定。判断できなかった面は、利用者が確認して決めます。
-- あらゆるポーズや視点での安全を保証すること
+- あらゆるポーズや視点での安全を保証すること（研究中）
 
 ---
 
 ## Roadmap (English)
 
-Plans, not commitments; they will change with real-avatar testing and feedback.
+These are future plans, not promises about timing or content. They will change with the results of testing on real avatars and with requests.
 
-- **Next:** testing on real avatars, faster CPU sampling, Japanese UI, showing the view in which a hidden face would be seen, Bodies split into several objects, and update notifications through an extension repository (GitHub Pages first, extensions.blender.org later; Blender checks for updates, the add-on itself stays offline).
-- **Considering:** body and clothing in one mesh, per-face output, alpha-clip materials, a GPU preview (not used for decisions), and a separate tool for body parts poking through clothing.
-- **New decision modes:** hiding only faces shown to be unseen from a declared range of camera positions, flagging faces that may appear in poses you did not inspect, and finding faces visible through narrow openings with less computation.
-- **Not planned:** automatically hiding Review faces, or claiming safety for every pose and view.
+### Next version
+
+- **Testing on a variety of real avatars:** check that the verdicts hold up and how long processing takes, and make the analysis more robust.
+- **Faster processing:** still on the CPU, speed up sampling by batching its calculations.
+- **Japanese UI:** show button labels, verdict reasons and warnings in Japanese.
+- **Showing why a face is kept:** for a face judged to be kept, jump with View Ray to a viewpoint from which it is actually seen, and check it side by side with the comparison mesh.
+- **Update notifications:** distribute through an extension repository, so that new versions appear in Blender's Get Extensions and can be updated from there. (Plan: start with a dedicated repository on GitHub Pages, and also consider publishing on extensions.blender.org. Blender itself checks for updates, only while Allow Online Access is on; UnderWhere itself still never connects to the network.)
+- **Distribution on BOOTH:** make the add-on available on BOOTH as well as on GitHub Releases.
+- **Demo video:** record a video that introduces the add-on, focusing mainly on how to operate it.
+
+### Under consideration
+
+- Support for models whose body and clothing are in the same mesh (the parts would need to be specified)
+- Per-face output, to reduce the faces that remain because they share vertices
+- Judging alpha-clip (cutout) materials
+- A fast GPU preview (never used as evidence for verdicts)
+- Fixing a body that pokes through clothing. This changes the shape of the body, so it will be a separate feature from the hiding verdicts.
+- Making the evidence behind verdicts explainable
+
+### New decision methods
+
+The current verdicts are candidates based on a finite number of samples in the inspected poses. Separately, the following methods are being considered. Whether to adopt them will be decided by comparing them on synthetic data and on real avatars.
+
+- Specify a range of viewpoints, for example by camera distance, and hide only faces confirmed to be unseen from that range
+- Specify a range of poses, and show in advance the faces that may become visible in poses that were not inspected
+- Find faces visible through narrow openings with less computation
+
+### Not planned
+
+- A setting that hides Review faces automatically. Faces that could not be decided are checked and decided by the user.
+- Guaranteeing safety for every pose and viewpoint (under research)

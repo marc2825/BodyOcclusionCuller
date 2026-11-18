@@ -85,7 +85,7 @@ def discard_legacy_report(settings):
 def guard(context, settings):
     return (context.scene.frame_current, context.scene.frame_subframe,
             adapter.digest(adapter.settings_record(settings, context.scene)),
-            settings.body.as_pointer() if settings.body else 0,
+            tuple(obj.as_pointer() if obj else 0 for obj in adapter.body_objects(settings)),
             tuple(item.object.as_pointer() if item.object else 0 for item in settings.occluders),
             settings.existing_mask, adapter.visibility_signature(context, settings))
 
@@ -122,7 +122,8 @@ def object_mode(context, settings):
     if context.mode == 'EDIT_MESH' and context.edit_object and adapter.is_preview(context.edit_object):
         # Selecting on the comparison mesh is a view-only activity; leave it.
         bpy.ops.object.mode_set(mode='OBJECT')
-    was_edit = context.mode == 'EDIT_MESH' and context.edit_object == settings.body
+    was_edit = context.mode == 'EDIT_MESH' and context.edit_object is not None and \
+        context.edit_object in adapter.body_objects(settings)
     if context.mode != 'OBJECT' and not was_edit:
         obj = context.edit_object or context.active_object
         mode = "Edit Mode" if context.mode.startswith('EDIT') else context.mode.replace('_', ' ').title()
@@ -209,8 +210,15 @@ def analyze_states(context, settings, base, fingerprint, states):
                         "fingerprint": state_fingerprint})
         if merged is None:
             merged = result
+            # Per-state tallies for the Poses comparison; the verdict itself
+            # stays the strict aggregate (exposed in any state means Keep).
+            for face in merged["faces"]:
+                face["hidden_states"] = int(face["verdict"] == CANDIDATE)
+                face["exposed_states"] = int(face["verdict"] == KEEP)
         else:
             for face, other in zip(merged["faces"], result["faces"]):
+                face["hidden_states"] += int(other["verdict"] == CANDIDATE)
+                face["exposed_states"] += int(other["verdict"] == KEEP)
                 label = aggregate([face["verdict"], other["verdict"]])
                 if other["verdict"] == label and face["verdict"] != label:
                     face["witness"] = other["witness"]

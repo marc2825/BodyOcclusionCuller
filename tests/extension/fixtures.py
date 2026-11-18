@@ -18,6 +18,10 @@ def reset():
     s = bpy.context.scene.underwhere
     s.body = None
     s.occluders.clear()
+    s.use_extra_bodies = False
+    s.extra_bodies.clear()
+    s.preview_show = {'HIDE_CANDIDATE', 'KEEP_EXPOSED', 'REVIEW', 'UNSAFE_EXISTING_MASK',
+                      'UNCERTAIN_EXISTING_MASK', 'MANUAL_HIDE', 'MANUAL_KEEP'}
     s.result_json = ""
     s.mode = 'GENERATE'
     s.existing_mask = ""

@@ -1,11 +1,11 @@
-# UnderWhere 動作確認（1.0.0）
+# UnderWhere 動作確認（1.1.0）
 
-正式名称への変更後の検証日：2026-11-15。公開リポジトリ：BodyOcclusionCuller。
+検証日：2026-11-18。公開リポジトリ：BodyOcclusionCuller。
 
 ## 環境
 
 - Blender 5.2.3 LTS（Windows）
-- テストの実行：Ubuntu（WSL）、CPython 3.12
+- テストの実行：Windows、CPython 3.11（GitHub Actions では Linux 版 Blender 5.2.3 で同じテストを実行）
 
 これ以外のバージョンの Blender、Linux・macOS 版 Blender、Unity / VRChat SDK では確認していません。
 
@@ -13,8 +13,8 @@
 
 | 項目 | 結果 |
 |---|---|
-| 単体テスト（判定規則、修復方針、共有レポート、配布物の検査） | 17 件成功 |
-| Blender 統合テスト（バックグラウンド実行） | 65 件成功（旧名称からの保存設定移行・読み取り専用データの保護を含む） |
+| 単体テスト（判定規則、修復方針、共有レポート、ベンダーコードの固定） | 14 件成功 |
+| Blender 統合テスト（バックグラウンド実行） | 71 件成功（旧名称からの保存設定移行・読み取り専用データの保護を含む） |
 | 公式ツールによる ZIP の検証・インストール・無効化・アンインストール | 9 項目成功 |
 | デモファイルの生成と個人情報の混入検査 | 成功 |
 | GUI 操作テスト | 自動スモーク 15 項目成功（人による操作受入とは別） |
@@ -33,6 +33,9 @@
 - 比較メッシュが、変更を監視する処理によって消されないこと
 - 比較メッシュ上の範囲選択が元の Body の面に対応すること、Only change Review faces が判定済みの面を変えないこと、Keep / Hide の後も比較メッシュで選択を続けられること
 - 身長 1.7 m の曲面の身体と 6 パーツの衣装
+- 複数のオブジェクトに分かれた Body の検査、Body 上の一括選択、オブジェクトごとの出力
+- Keep / Hide で指定した面の色分けと、色ごとの表示切り替え
+- 複数フレームで各面が隠れていた割合（Poses 表示）
 - FBX の書き出しと読み込みで、シェイプキー・UV・ボーン・スキンウェイトが残ること
 - キャンセル、Undo / Redo、ファイルの再読み込み
 
@@ -62,5 +65,4 @@ Extension ID・Pythonパッケージは `underwhere`、サイドバー名は Und
 旧名称で保存した Body・衣装・フレーム・選択設定と明示的な素材仮定は移行し、
 古い解析結果は引き継がず再解析を必要とします。
 
-新しい配布物は `underwhere-1.0.0.zip`、`underwhere_demo.blend`、
-`BodyOcclusionCuller-1.0.0.zip`、`underwhere-release-1.0.0.zip` です。
+配布物は `underwhere-1.1.0.zip`、その SHA-256（`underwhere-1.1.0.zip.sha256`）、`underwhere_demo.blend` です。

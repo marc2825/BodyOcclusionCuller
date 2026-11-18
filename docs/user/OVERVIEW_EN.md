@@ -14,12 +14,12 @@ Download the Extension ZIP from [GitHub Releases](https://github.com/marc2825/Bo
 
 The sidebar is split into five sections: **1 Inputs**, **2 Inspection** (with collapsed Materials and Advanced), **3 Results**, **4 Review and Fix** and **5 Output**. The result sections appear after Analyze.
 
-1. Select the clothing and the Body, with the Body active, and press **Use Selection**.
+1. Select the clothing and the Body, with the Body active, and press **Use Selection**. If the Body is split into several objects (for example a separate head), turn on **Body has several objects** and add the other parts with **+**; each part gets its own output copy (Generate only).
 2. Choose **Generate Mask**, or **Audit Existing Mask** for a single vertex-group Mask modifier at the end of the stack (Smooth off).
 3. The current frame is always inspected. **Current + Selected Frames** adds up to 32 frames. A face is a candidate only if it stays hidden in every inspected frame.
 4. Pick a work budget (Quick / Balanced / Detailed — sampling density, not a safety level), then **Preflight** and **Analyze**.
 
-Results are labelled Candidate, Keep (seen) and Review (undecided). **Output hides** is the face count actually removed by the generated mask. **Update Comparison** shows a colored copy beside the Body: Classification, **Before / After** (existing mask versus output), Output or Unmasked.
+Results are labelled Candidate, Keep (seen) and Review (undecided). **Output hides** is the face count actually removed by the generated mask. Faces you set yourself show as pink (Hidden by you) and white (Kept by you), and clicking a color in the Classification legend shows or hides those faces on the comparison. **Poses** shades each face by the share of inspected frames in which it was hidden; the verdict itself still keeps any face seen in one frame. **Update Comparison** shows a colored copy beside the Body: Classification, **Before / After** (existing mask versus output), Output or Unmasked.
 
 When auditing, exposed faces are always restored. **Restore exposed + undecided** (default) also restores faces that could not be decided; **Restore exposed only** keeps the existing mask there and reports how many undecided faces stay hidden. A disabled mask, or one that hides nothing or everything, is flagged.
 
@@ -47,4 +47,4 @@ The Body itself is never treated as a blocker, so a garment with an open back ma
 
 Results are not saved in the .blend file. Analyze again after reopening a file, re-enabling the Extension or changing inputs.
 
-License: MIT, Copyright (c) 2026 marc2825. No network access or telemetry.
+License: Original License (free to use, and what you make with it is yours; redistributing or selling the add-on itself is not permitted), Copyright (c) 2026 marc2825. No network access or telemetry.

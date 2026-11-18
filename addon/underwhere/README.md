@@ -20,4 +20,4 @@ Install via **Preferences → Get Extensions → Install from Disk** and open th
 
 Guide: https://github.com/marc2825/BodyOcclusionCuller
 
-MIT License. Copyright (c) 2026 marc2825
+Original License (see LICENSE): free to use; what you make is yours; do not redistribute or sell the add-on / 作ったものは自由、アドオン自体の再配布・販売は不可. Copyright (c) 2026 marc2825

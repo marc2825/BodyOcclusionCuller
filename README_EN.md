@@ -1,13 +1,19 @@
 # UnderWhere
 
 [![Version](https://img.shields.io/github/v/release/marc2825/BodyOcclusionCuller?label=version)](https://github.com/marc2825/BodyOcclusionCuller/releases)
-[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![License: Original License](https://img.shields.io/badge/License-Original%20License-orange.svg)](LICENSE)
 
 [日本語](README.md) | [English](README_EN.md)
 
-![UnderWhere in Blender: the clothed avatar on the left and the color-coded comparison mesh on the right (green: hide candidates, blue: kept, yellow: undecided)](docs/images/teaser.png)
+![UnderWhere logo and screen in Blender: the clothed avatar on the left and the color-coded comparison mesh on the right (green: hide candidates, blue: kept, yellow: undecided)](docs/images/teaser.png)
+
+Model: [Shinano](https://booth.pm/en/items/6106863) (ポンデロニウム研究所)
 
 UnderWhere is a Blender Extension that analyzes which faces of a body mesh are hidden beneath clothing and creates either a mask to hide those faces or a copy with them removed. It leaves the original Body untouched and highlights faces that should remain visible or could not be reliably classified. It works entirely offline.
+
+Removing the hidden faces has benefits such as:
+- **Lighter avatars:** fewer polygons.
+- **Less poke-through:** the body shows through the clothing less often when the avatar moves.
 
 > Tested on Blender 5.2.3 LTS for Windows.
 
@@ -55,6 +61,10 @@ python3 scripts/extension/package_extension.py --blender /path/to/blender # Buil
 blender -b --factory-startup --python scripts/extension/create_sample.py  # Generate demo
 ```
 
+On every push to `main` and every pull request, GitHub Actions runs the tests and validates the ZIP with Blender for Linux. To release, update the version in `blender_manifest.toml` and `CHANGELOG.md`, then run `git tag v1.0.0` and `git push origin v1.0.0`. After the tests pass, a draft release is created with the ZIP, its SHA-256 and the demo attached; review it and publish it.
+
 ## License
 
-MIT License. Copyright (c) 2026 marc2825
+[Original License](LICENSE) (custom terms). Copyright (c) 2026 marc2825
+
+The add-on is free to use for any purpose, including commercial work, and avatars and outfits you make with it are yours to use and sell. You may not redistribute or sell the add-on itself, modified or not; to share it, link to this repository or its [Releases](https://github.com/marc2825/BodyOcclusionCuller/releases).

@@ -212,6 +212,7 @@ def analyze_steps(state, fingerprint):
         "method": METHOD, "run_id": uuid.uuid4().hex,
         "environment": {"blender": state["blender"]},
         "input": {"body": body["name"], "mesh": body["mesh"],
+                  "body_parts": body.get("parts", []),
                   "occluders": [o["name"] for o in state["occluders"]],
                   "mode": settings["mode"], "frame": state["frame"],
                   "subframe": state["subframe"], "settings": settings},
