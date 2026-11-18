@@ -1,0 +1,56 @@
+name: Set up Blender
+description: Download the official Linux build of Blender, verify its SHA-256 and unpack it.
+
+inputs:
+  version:
+    description: Blender version to test with
+    default: "5.2.3"
+  sha256:
+    description: SHA-256 of blender-<version>-linux-x64.tar.xz, from download.blender.org
+    default: "78486c018b4443efe5e75ab54c290ed8c15abafd249b862c2c9ce2530a918eec"
+
+outputs:
+  blender:
+    description: Path to the blender executable
+    value: ${{ steps.unpack.outputs.blender }}
+
+runs:
+  using: composite
+  steps:
+    - name: Install system libraries Blender needs
+      shell: bash
+      run: |
+        sudo apt-get update -q
+        sudo apt-get install -yq --no-install-recommends \
+          libx11-6 libxext6 libxi6 libxxf86vm1 libxfixes3 libxrender1 \
+          libxkbcommon0 libsm6 libgl1 libegl1
+
+    - name: Restore the Blender download
+      id: cache
+      uses: actions/cache@v6
+      with:
+        path: ${{ runner.temp }}/blender-download
+        key: blender-${{ inputs.version }}-linux-x64-${{ inputs.sha256 }}
+
+    - name: Download Blender
+      if: steps.cache.outputs.cache-hit != 'true'
+      shell: bash
+      env:
+        VERSION: ${{ inputs.version }}
+      run: |
+        mkdir -p "$RUNNER_TEMP/blender-download"
+        series="${VERSION%.*}"
+        curl -fsSL --retry 3 -o "$RUNNER_TEMP/blender-download/blender.tar.xz" \
+          "https://download.blender.org/release/Blender${series}/blender-${VERSION}-linux-x64.tar.xz"
+
+    - name: Verify and unpack Blender
+      id: unpack
+      shell: bash
+      env:
+        SHA256: ${{ inputs.sha256 }}
+      run: |
+        echo "${SHA256}  $RUNNER_TEMP/blender-download/blender.tar.xz" | sha256sum -c -
+        mkdir -p "$RUNNER_TEMP/blender"
+        tar -xf "$RUNNER_TEMP/blender-download/blender.tar.xz" -C "$RUNNER_TEMP/blender" --strip-components=1
+        "$RUNNER_TEMP/blender/blender" --version | head -1
+        echo "blender=$RUNNER_TEMP/blender/blender" >> "$GITHUB_OUTPUT"

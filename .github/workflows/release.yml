@@ -1,0 +1,83 @@
+name: Release
+
+# Push a tag such as v1.0.0 to test, build and attach the Extension ZIP, its
+# SHA-256 and the demo to a draft GitHub Release. Review it, then publish it.
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: Draft release
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - name: Check the tag matches the manifest and the changelog
+        run: |
+          version=$(python -c "import tomllib; print(tomllib.load(open('addon/underwhere/blender_manifest.toml', 'rb'))['version'])")
+          if [ "v$version" != "$GITHUB_REF_NAME" ]; then
+            echo "::error::Tag $GITHUB_REF_NAME does not match the manifest version $version"
+            exit 1
+          fi
+          awk -v heading="## $version" \
+            'index($0, heading) == 1 { found = 1; next } found && /^## / { exit } found' \
+            CHANGELOG.md > release-notes.md
+          if ! grep -q '[^[:space:]]' release-notes.md; then
+            echo "::error::CHANGELOG.md has no section for $version"
+            exit 1
+          fi
+          echo "VERSION=$version" >> "$GITHUB_ENV"
+
+      - name: Unit tests (no Blender)
+        run: python scripts/extension/run_tests.py --python-only
+
+      - name: Set up Blender
+        id: blender
+        uses: ./.github/actions/setup-blender
+
+      - name: Blender integration tests
+        env:
+          BLENDER: ${{ steps.blender.outputs.blender }}
+        run: >-
+          "$BLENDER" --background --factory-startup --offline-mode --python-exit-code 1
+          --python tests/extension/blender_integration.py
+
+      - name: Build and validate the Extension ZIP
+        run: python scripts/extension/package_extension.py --blender "${{ steps.blender.outputs.blender }}"
+
+      - name: Install the ZIP into an isolated repository
+        env:
+          BLENDER: ${{ steps.blender.outputs.blender }}
+        run: >-
+          "$BLENDER" -b --factory-startup --offline-mode --python-exit-code 1
+          --python tests/extension/install_zip.py
+
+      - name: Generate the demo scene
+        env:
+          BLENDER: ${{ steps.blender.outputs.blender }}
+        run: >-
+          "$BLENDER" -b --factory-startup --offline-mode --python-exit-code 1
+          --python scripts/extension/create_sample.py
+
+      - name: Create the draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" --draft --verify-tag \
+            --title "UnderWhere $VERSION" --notes-file release-notes.md \
+            "dist/underwhere-$VERSION.zip" \
+            "dist/underwhere-$VERSION.zip.sha256" \
+            "dist/underwhere_demo.blend"
