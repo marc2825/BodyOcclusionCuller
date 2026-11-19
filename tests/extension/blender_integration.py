@@ -1072,6 +1072,17 @@ class BlenderIntegration(unittest.TestCase):
                        "underwhere.repair_policy", "underwhere.preview",
                        "underwhere.apply", "underwhere.export"):
             self.assertIn(("operator", idname), calls)
+        # Untrusted clothing materials are listed with an Opaque switch.
+        _, _, s = fx.setup(alpha=.5)
+        self.analyze(s)
+        draw_all()
+        self.assertIn(("label", "Review faces blocked by clothing materials"), calls)
+        self.assertIn(("label", "No hide candidates. Main reasons:"), calls)
+        # An out-of-date result says why and offers the way back.
+        s.status = "STALE: inputs changed; Analyze again"
+        draw_all()
+        self.assertIn(("label", "Out of date: use Analyze Again at the top"), calls)
+        self.assertIn(("label", "The Body, clothing, materials or frames changed."), calls)
 
     def test_59_bulk_select_review_faces_then_hide_them_at_once(self):
         body, _, s = fx.setup(alpha=.5)  # every face Review for an untrusted material
@@ -1400,6 +1411,64 @@ class BlenderIntegration(unittest.TestCase):
         self.assertEqual(adapter.poses_label(.8), "POSES_MOST")
         self.assertEqual(adapter.poses_label(.3), "POSES_FEW")
         self.assertEqual(adapter.poses_label(0.0), "POSES_NONE")
+
+
+    def test_72_empty_animation_data_does_not_untrust_a_material(self):
+        material = fx.material("FbxImported")
+        material.animation_data_create()  # FBX imports leave empty containers like these
+        material.node_tree.animation_data_create()
+        material.node_tree.animation_data.action = bpy.data.actions.new("EmptyAction")
+        policy = adapter.material_policy(material)
+        self.assertEqual(policy["automatic_verdict"], "CONSTANT_OPAQUE_PRINCIPLED")
+        self.assertEqual(policy["animation"], [])
+        # Real keyframes or drivers still make it untrusted, with the source named.
+        material.node_tree.nodes["Principled BSDF"].inputs["Alpha"].keyframe_insert("default_value", frame=1)
+        policy = adapter.material_policy(material)
+        self.assertEqual(policy["automatic_verdict"], "ANIMATED_MATERIAL_UNSUPPORTED")
+        self.assertEqual(policy["animation"], ["action"])
+        driven = fx.material("Driven")
+        driven.driver_add("roughness")
+        self.assertEqual(adapter.material_policy(driven)["animation"], ["drivers"])
+
+    def test_73_body_imported_100x_too_large_is_sampled_at_human_scale(self):
+        body, shell, s = fx.setup()
+        for obj in (body, shell):
+            for vertex in obj.data.vertices:
+                vertex.co *= 100
+            obj.data.update()
+        report = self.analyze(s)
+        self.assertAlmostEqual(report["input"]["body_size_metres"], 20.0, places=4)
+        self.assertEqual(report["input"]["settings"]["scale_normalization"], 0.1)
+        self.assertEqual(report["counts"], {CANDIDATE: 6})
+        # Without the normalization the cover cannot reach the step: all Review (the reported bug).
+        with patch.object(adapter, "scale_normalization", return_value=1.0):
+            self.assertEqual(self.analyze(s)["counts"], {REVIEW: 6})
+        self.assertEqual(adapter.scale_normalization(1.5), 1.0)
+        self.assertEqual(adapter.scale_normalization(0.015), 1.0)  # small Bodies already work
+
+    def test_74_tiny_fbx_object_scale_is_accepted_and_real_singularity_explained(self):
+        body, _, s = fx.setup()
+        for vertex in body.data.vertices:
+            vertex.co *= 10000
+        body.data.update()
+        body.scale = (0.0001, 0.0001, 0.0001)  # determinant 1e-12, world size unchanged
+        bpy.context.view_layer.update()
+        self.assertEqual(self.analyze(s)["counts"], {CANDIDATE: 6})
+        body.scale = (1.0, 0.0, 1.0)
+        bpy.context.view_layer.update()
+        with self.assertRaisesRegex(adapter.InputError, r"SINGULAR_TRANSFORM.*Ctrl\+A"):
+            adapter.snapshot(bpy.context, s)
+
+    def test_75_untrusted_materials_are_named_and_opaque_restores_candidates(self):
+        _, shell, s = fx.setup(alpha=.5)
+        report = self.analyze(s)
+        self.assertEqual(report["counts"], {REVIEW: 6})
+        material = shell.data.materials[0]
+        self.assertEqual(ui.material_blockers(report), [(material.name, 6)])
+        material.underwhere_assume_opaque = True  # the switch the Results panel offers
+        self.assertEqual(self.analyze(s)["counts"], {CANDIDATE: 6})
+        self.assertEqual(ui.stale_explanation("STALE: file loaded; Analyze again")[0],
+                         "Results are not saved in .blend files.")
 
 
 if __name__ == "__main__":

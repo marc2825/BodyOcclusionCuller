@@ -1,4 +1,5 @@
 """Sidebar panels and undoable operators."""
+from collections import Counter
 import json
 import time
 
@@ -68,8 +69,8 @@ REASON_HINTS = {
     "OCCLUDER_TOPOLOGY_AMBIGUITY": ("表示された衣装のメッシュを直して再解析、または目視で判断",
                                     "Fix the named clothing mesh, or check visually"),
     "SOLIDIFY_OPENING_UNRESOLVED": ("目視で確認し、隠すなら Hide", "Check visually; Hide if hidden"),
-    "SPATIAL_COVER_INCOMPLETE_OR_DEGENERATE": ("処理量を Detailed にして再解析",
-                                               "Use Detailed and re-analyze"),
+    "SPATIAL_COVER_INCOMPLETE_OR_DEGENERATE": ("処理量を Detailed にして再解析。全面がこれなら Body の大きさ（単位）を確認",
+                                               "Use Detailed and re-analyze; if every face shows this, check the Body's scale"),
     "NO_COMPLETE_EVIDENCE": ("目視で確認し、隠すなら Hide", "Check visually; Hide if hidden"),
 }
 #: Reason codes that describe evidence rather than a cause to act on.
@@ -423,12 +424,17 @@ class UNDERWHERE_OT_preflight(SafeOperator, Operator):
             workflow.BUSY.add(key)
             s = context.scene.underwhere
             state, _ = adapter.snapshot(context, s)
-            untrusted = sum(m["verdict"] not in ("CONSTANT_OPAQUE_PRINCIPLED", "USER_ASSUMED_OPAQUE")
-                            for o in state["occluders"] for m in o["materials"])
+            verdicts = Counter(m["verdict"] for o in state["occluders"] for m in o["materials"]
+                               if m["verdict"] not in TRUSTED_MATERIALS)
+            untrusted = sum(verdicts.values())
             missing = sum(not o["materials"] for o in state["occluders"])
             mask_warning = existing_mask_warning(
                 s.mode, state["existing_mask"], len(state["body"]["polygons"]))
-            text = f"Preflight OK; {untrusted + missing} untrusted material slots/objects"
+            text = "Preflight OK; " + size_caption(state["body_size_metres"],
+                                                   state["settings"]["scale_normalization"])
+            text += f"; {untrusted + missing} untrusted material slots/objects"
+            if verdicts:
+                text += " (" + ", ".join(f"{reason_label(v)} {n}" for v, n in verdicts.most_common(3)) + ")"
             if mask_warning:
                 text += "; " + reason_label(mask_warning)
             s.status = text
@@ -1021,6 +1027,49 @@ LEGENDS = {
 }
 
 
+TRUSTED_MATERIALS = ("CONSTANT_OPAQUE_PRINCIPLED", "USER_ASSUMED_OPAQUE")
+#: Witness verdicts that mean "a clothing material could not be trusted".
+MATERIAL_REASONS = {"ALPHA_OR_TRANSMISSION_UNTRUSTED", "UNSUPPORTED_SHADER", "NODE_SURFACE_REQUIRED",
+                    "ANIMATED_MATERIAL_UNSUPPORTED", "MISSING_MATERIAL"}
+
+
+def size_caption(size, factor):
+    if factor == 1.0:
+        return f"Body {size:.3g} m"
+    return f"Body {size:.3g} m in scene units; sampled as {size * factor:.3g} m (x{factor:g})"
+
+
+def material_blockers(report):
+    """(material name, Review face count) for untrusted clothing materials, largest first."""
+    counts = Counter(face["witness"].get("material") for face in report["faces"]
+                     if face["verdict"] == REVIEW and face["witness"]
+                     and face["witness"].get("material_verdict") in MATERIAL_REASONS)
+    return counts.most_common()
+
+
+def stale_explanation(status):
+    """Two short lines on why the result is out of date."""
+    reason = "This result no longer matches the scene."
+    if "loaded" in status or "expired" in status or "loading" in status or not status.startswith("STALE"):
+        reason = "Results are not saved in .blend files."
+    elif "enabled" in status:
+        reason = "Results were cleared when the add-on was enabled."
+    elif any(word in status for word in ("inputs changed", "no longer supported", "frame changed",
+                                         "texture", "Body objects changed")):
+        reason = "The Body, clothing, materials or frames changed."
+    return [reason, "Output stays off until you analyze again."]
+
+
+def stale_guard(layout, settings):
+    """Say why a result panel is disabled, then return its disabled body layout."""
+    if not settings.status.startswith("STALE"):
+        return layout
+    layout.label(text="Out of date: use Analyze Again at the top", icon='ERROR')
+    body = layout.column()
+    body.enabled = False
+    return body
+
+
 class UNDERWHERE_PT_main(Panel):
     bl_label = "UnderWhere"
     bl_idname = "UNDERWHERE_PT_main"
@@ -1036,8 +1085,13 @@ class UNDERWHERE_PT_main(Panel):
         if is_busy(context):
             box.prop(s, "progress", text="Progress")
             box.operator("underwhere.cancel", icon='CANCEL')
-        elif s.result_json and current_report(context) is None:
-            box.label(text="Result unavailable; Analyze again", icon='ERROR')
+        elif s.status.startswith("STALE") or (s.result_json and current_report(context) is None):
+            column = box.column(align=True)
+            for line in stale_explanation(s.status):
+                column.label(text=line, icon='INFO')
+            row = box.row()
+            row.scale_y = 1.3
+            row.operator("underwhere.analyze", text="Analyze Again", icon='FILE_REFRESH')
 
 
 class SubPanel:
@@ -1133,7 +1187,9 @@ class UNDERWHERE_PT_materials(SubPanel, Panel):
             elif policy['assumption_blocked']:
                 column.label(text="Backface culling: cannot assume", icon='ERROR')
             else:
-                column.label(text="Auto: " + reason_label(policy['automatic_verdict']), icon='QUESTION')
+                detail = f" ({', '.join(policy['animation'])})" if policy.get('animation') else ""
+                column.label(text="Auto: " + reason_label(policy['automatic_verdict']) + detail,
+                             icon='QUESTION')
 
 
 class UNDERWHERE_PT_advanced(SubPanel, Panel):
@@ -1197,10 +1253,29 @@ class UNDERWHERE_PT_results(ResultPanel, Panel):
             warnings.append(f"Candidates relying on Assume opaque: {assumed}")
         if plan.get("kept_at_shared_vertices"):
             warnings.append(f"Candidates kept at shared vertices: {len(plan['kept_at_shared_vertices'])}")
+        factor = report["input"]["settings"].get("scale_normalization", 1.0)
+        if factor != 1.0:
+            warnings.append(size_caption(report["input"].get("body_size_metres") or 0.0, factor))
         if warnings:
             box = layout.box()
             for line in warnings:
                 box.label(text=line, icon='ERROR')
+        if not counts.get(CANDIDATE):
+            box = layout.box()
+            box.label(text="No hide candidates. Main reasons:", icon='INFO')
+            for code, count in review_reason_counts(report)[:3]:
+                box.label(text=f"{reason_label(code)}: {count}", icon='DOT')
+        blockers = material_blockers(report)
+        if blockers:
+            box = layout.box()
+            box.label(text="Review faces blocked by clothing materials", icon='MATERIAL')
+            for name, count in blockers[:5]:
+                row = box.row()
+                row.label(text=f"{name or 'No material'}: {count}")
+                material = bpy.data.materials.get(name) if name else None
+                if material is not None and not adapter.material_policy(material)["assumption_blocked"]:
+                    row.prop(material, "underwhere_assume_opaque", text="Opaque")
+            box.label(text="Tick Opaque only if fully opaque, then Analyze", icon='LIGHT')
 
 
 class UNDERWHERE_PT_review(ResultPanel, Panel):
@@ -1210,8 +1285,7 @@ class UNDERWHERE_PT_review(ResultPanel, Panel):
     def draw(self, context):
         s = context.scene.underwhere
         report = current_report(context)
-        layout = self.layout
-        layout.enabled = not s.status.startswith("STALE")
+        layout = stale_guard(self.layout, s)
 
         column = layout.column(align=True)
         row = column.row(align=True)
@@ -1305,8 +1379,7 @@ class UNDERWHERE_PT_reasons(ResultPanel, Panel):
 
     def draw(self, context):
         s = context.scene.underwhere
-        layout = self.layout
-        layout.enabled = not s.status.startswith("STALE")
+        layout = stale_guard(self.layout, s)
         reasons = review_reason_counts(current_report(context))
         if not reasons:
             layout.label(text="No undecided faces", icon='CHECKMARK')
@@ -1332,8 +1405,7 @@ class UNDERWHERE_PT_faces(ResultPanel, Panel):
     def draw(self, context):
         s = context.scene.underwhere
         report = current_report(context)
-        layout = self.layout
-        layout.enabled = not s.status.startswith("STALE")
+        layout = stale_guard(self.layout, s)
         if s.issues:
             layout.template_list('UNDERWHERE_UL_issues', '', s, 'issues', s, 'issue_index', rows=4)
         else:
@@ -1363,8 +1435,7 @@ class UNDERWHERE_PT_output(ResultPanel, Panel):
 
     def draw(self, context):
         s = context.scene.underwhere
-        layout = self.layout
-        layout.enabled = not s.status.startswith("STALE")
+        layout = stale_guard(self.layout, s)
         column = layout.column(align=True)
         column.scale_y = 1.2
         column.operator("underwhere.apply", text="Apply to New Copy", icon='MOD_MASK')

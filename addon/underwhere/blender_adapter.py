@@ -74,18 +74,50 @@ def material_record(material):
     return record
 
 
+def action_has_curves(action):
+    """True when the action holds at least one F-Curve (layered actions included)."""
+    if getattr(action, "fcurves", None):  # legacy accessor; gone in Blender 5.0
+        return True
+    for layer in getattr(action, "layers", ()):
+        for strip in layer.strips:
+            if any(len(bag.fcurves) for bag in getattr(strip, "channelbags", ())):
+                return True
+    return False
+
+
+def animation_sources(block):
+    """What actually animates an ID: 'action', 'drivers' and/or 'NLA'.
+
+    FBX imports often leave an empty AnimData container behind; that animates
+    nothing and must not make a material untrusted."""
+    data = getattr(block, "animation_data", None)
+    if data is None:
+        return []
+    sources = []
+    if data.action is not None and action_has_curves(data.action):
+        sources.append("action")
+    if any(not curve.mute for curve in data.drivers):
+        sources.append("drivers")
+    if any(not track.mute and any(not strip.mute and strip.action is not None
+                                  and action_has_curves(strip.action) for strip in track.strips)
+           for track in data.nla_tracks):
+        sources.append("NLA")
+    return sources
+
+
 def material_policy(material):
     """Cheap UI policy, shared with the fingerprinted material record."""
     if material is None:
         return {"automatic_verdict": "MISSING_MATERIAL", "verdict": "MISSING_MATERIAL",
-                "user_assumed_opaque": False, "assumption_blocked": False}
+                "user_assumed_opaque": False, "assumption_blocked": False, "animation": []}
     graph = material.node_tree
     culling = any(getattr(material, key, False) for key in (
         "use_backface_culling", "use_backface_culling_shadow", "use_backface_culling_lightprobe"))
+    animation = sorted(set(animation_sources(material)) | set(animation_sources(graph)))
     reason = "UNSUPPORTED_SHADER"
     if not material.use_nodes or graph is None:
         reason = "NODE_SURFACE_REQUIRED"
-    elif material.animation_data or graph.animation_data:
+    elif animation:
         reason = "ANIMATED_MATERIAL_UNSUPPORTED"
     elif culling:
         reason = "BACKFACE_CULLING_UNTRUSTED"
@@ -117,14 +149,40 @@ def material_policy(material):
     verdict = "BACKFACE_CULLING_UNTRUSTED" if culling else (
         "USER_ASSUMED_OPAQUE" if requested else reason)
     return {"automatic_verdict": reason, "user_assumed_opaque": requested,
-            "assumption_blocked": culling, "verdict": verdict}
+            "assumption_blocked": culling, "verdict": verdict, "animation": animation}
 
 
-def settings_record(settings, scene):
-    scale = scene.unit_settings.scale_length
+#: Largest bounding-box side (metres) still treated as an avatar at its real size.
+MAX_PLAUSIBLE_BODY_METRES = 10.0
+
+
+def body_size_metres(vertices, scene):
+    if not vertices:
+        return 0.0
+    extent = max(max(v[axis] for v in vertices) - min(v[axis] for v in vertices) for axis in range(3))
+    return extent * scene.unit_settings.scale_length
+
+
+def scale_normalization(size_metres):
+    """Power-of-ten factor that brings an implausibly large Body back to human scale.
+
+    FBX imports often arrive 100x too large (centimetres read as metres). The
+    sampling step is in metres, so such a Body would need far more subdivision
+    than the cover allows and every face would end up Review. Small Bodies are
+    left alone: a relatively coarse step needs no extra subdivision, and they
+    already match the full-size result."""
+    if size_metres <= MAX_PLAUSIBLE_BODY_METRES:
+        return 1.0
+    return 10.0 ** round(math.log10(1.6 / size_metres))
+
+
+def settings_record(settings, scene, normalization=1.0):
+    scale = scene.unit_settings.scale_length * normalization
     return {"mode": settings.mode, "preset": settings.preset,
             "r": settings.spatial_step / scale, "epsilon_degrees": settings.angle,
             "spatial_step_metres": settings.spatial_step, "metres_per_world_unit": scale,
+            "scene_metres_per_world_unit": scene.unit_settings.scale_length,
+            "scale_normalization": normalization,
             "touch_tolerance": settings.touch_tolerance / scale,
             "scope": settings.scope, "frames": settings.frames,
             "current_pose_always_included": True,
@@ -186,8 +244,14 @@ def inputs(context, settings):
                 raise InputError(f"COLLECTION_VISIBILITY_UNTRUSTED: {obj.name}/{layer.name}")
         if obj.is_instancer:
             raise InputError(f"INSTANCING_UNSUPPORTED: {obj.name}")
-        if abs(obj.matrix_world.determinant()) < 1e-12:
-            raise InputError(f"SINGULAR_TRANSFORM: {obj.name}")
+        # Judge each axis, not the determinant: FBX imports commonly use object
+        # scales such as 0.0001 (determinant 1e-12) with perfectly sized meshes.
+        axes = obj.matrix_world.to_3x3()
+        lengths = [axes.col[i].length for i in range(3)]
+        if (min(lengths) <= 1e-12 * max(1.0, max(lengths))
+                or abs(axes.determinant()) <= 1e-9 * lengths[0] * lengths[1] * lengths[2]):
+            raise InputError(f"SINGULAR_TRANSFORM: {obj.name} has a zero or flattened scale; "
+                             "fix its scale, or apply it (Ctrl+A > Scale) on a working copy")
     target = None
     if settings.mode == 'AUDIT':
         target = body.modifiers.get(settings.existing_mask)
@@ -373,8 +437,11 @@ def snapshot(context, settings):
         existing = {"name": target.name, "hidden_faces": sorted(hidden),
                     "settings": target_record, "evaluated_remaining_counts": counts,
                     "enabled": target.show_viewport}
+    size = body_size_metres(bdata["vertices"], context.scene)
     state = {
-        "body": bdata, "occluders": odata, "settings": settings_record(settings, context.scene),
+        "body": bdata, "occluders": odata,
+        "settings": settings_record(settings, context.scene, scale_normalization(size)),
+        "body_size_metres": size,
         "existing_mask": existing,
         "frame": context.scene.frame_current, "subframe": context.scene.frame_subframe,
         "blender": bpy.app.version_string, "extension": VERSION,

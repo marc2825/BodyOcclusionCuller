@@ -213,6 +213,7 @@ def analyze_steps(state, fingerprint):
         "environment": {"blender": state["blender"]},
         "input": {"body": body["name"], "mesh": body["mesh"],
                   "body_parts": body.get("parts", []),
+                  "body_size_metres": state.get("body_size_metres"),
                   "occluders": [o["name"] for o in state["occluders"]],
                   "mode": settings["mode"], "frame": state["frame"],
                   "subframe": state["subframe"], "settings": settings},

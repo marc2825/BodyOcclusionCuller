@@ -45,6 +45,6 @@ The Body itself is never treated as a blocker, so a garment with an open back ma
 
 **Export Shareable Report** contains counts, reasons and versions only — no geometry, names or personal paths. Use it for bug reports. **Private full diagnostics** include mesh data; do not share them.
 
-Results are not saved in the .blend file. Analyze again after reopening a file, re-enabling the Extension or changing inputs.
+Results are not saved in the .blend file. Analyze again after reopening a file, re-enabling the Extension or changing inputs; the top of the panel then explains why and offers **Analyze Again**. If clothing materials block candidates, Results names them with an **Opaque** switch. A Body larger than 10 m in world space (for example a 100x FBX import) is sampled at human scale, and Preflight shows the Body size.
 
 License: Original License (free to use, and what you make with it is yours; redistributing or selling the add-on itself is not permitted), Copyright (c) 2026 marc2825. No network access or telemetry.
