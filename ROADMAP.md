@@ -8,7 +8,7 @@
 - **処理の高速化**：CPU のまま、サンプリングの計算をまとめて速くします。
 - **日本語の UI**：ボタン名、判定の理由、警告を日本語で表示します。
 - **残す根拠の可視化**：残すと判定した面が実際に見える視点へ View Ray で移動し、比較メッシュと並べて確認できるようにします。
-- **更新の通知**：拡張機能リポジトリから配布し、新しい版が出たら Blender の Get Extensions に表示して、そこから更新できるようにします。（案：まず GitHub Pages に専用のリポジトリを用意し、extensions.blender.org への公開も検討します。更新の確認は、Allow Online Access がオンのときに Blender 本体が行います。UnderWhere 自体はこれまでどおりネットワークに接続しません。）
+- **更新の通知**：拡張機能リポジトリから配布し、新しい版が出たら Blender の Get Extensions に表示して、そこから更新できるようにします。（案：GitHub Pages に専用のリポジトリを用意します。更新の確認は、Allow Online Access がオンのときに Blender 本体が行います。UnderWhere 自体はこれまでどおりネットワークに接続しません。）
 - **BOOTH での頒布**：GitHub Releases に加えて、BOOTH でも入手できるようにします。
 - **デモ動画の撮影**：操作方法を中心に、使い方を紹介する動画を作ります。
 
@@ -20,6 +20,7 @@
 - GPU による高速なプレビュー（判定の根拠には使いません）
 - 衣装を突き抜ける身体の修正。身体の形を変える操作なので、非表示の判定とは別の機能として扱います。
 - 判定の根拠の説明可能性
+- extensions.blender.org での公開。同プラットフォームは add-on に GPL-3.0-or-later を求めるため、当面は Original License のまま GitHub と BOOTH で配布し、完成度が高まった段階でライセンスと合わせて検討します。
 
 ## 新しい判定方式
 
@@ -46,7 +47,7 @@ These are future plans, not promises about timing or content. They will change w
 - **Faster processing:** still on the CPU, speed up sampling by batching its calculations.
 - **Japanese UI:** show button labels, verdict reasons and warnings in Japanese.
 - **Showing why a face is kept:** for a face judged to be kept, jump with View Ray to a viewpoint from which it is actually seen, and check it side by side with the comparison mesh.
-- **Update notifications:** distribute through an extension repository, so that new versions appear in Blender's Get Extensions and can be updated from there. (Plan: start with a dedicated repository on GitHub Pages, and also consider publishing on extensions.blender.org. Blender itself checks for updates, only while Allow Online Access is on; UnderWhere itself still never connects to the network.)
+- **Update notifications:** distribute through an extension repository, so that new versions appear in Blender's Get Extensions and can be updated from there. (Plan: a dedicated repository on GitHub Pages. Blender itself checks for updates, only while Allow Online Access is on; UnderWhere itself still never connects to the network.)
 - **Distribution on BOOTH:** make the add-on available on BOOTH as well as on GitHub Releases.
 - **Demo video:** record a video that introduces the add-on, focusing mainly on how to operate it.
 
@@ -58,6 +59,7 @@ These are future plans, not promises about timing or content. They will change w
 - A fast GPU preview (never used as evidence for verdicts)
 - Fixing a body that pokes through clothing. This changes the shape of the body, so it will be a separate feature from the hiding verdicts.
 - Making the evidence behind verdicts explainable
+- Publishing on extensions.blender.org. The platform requires GPL-3.0-or-later for add-ons, so for now the add-on stays under the Original License and is distributed on GitHub and BOOTH; publishing there, together with the license, will be considered once the add-on is more mature.
 
 ### New decision methods
 

@@ -1,6 +1,6 @@
 schema_version = "1.0.0"
 id = "underwhere"
-version = "1.1.1"
+version = "1.1.2"
 name = "UnderWhere"
 tagline = "Generate and repair body masks while preserving the source"
 maintainer = "marc2825"

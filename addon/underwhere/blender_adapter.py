@@ -660,12 +660,31 @@ def current_preview(scene):
                  if obj.get(OWNER) == f"PREVIEW:{scene.name_full}"), None)
 
 
+SOURCE_FACE_ATTRIBUTE = "underwhere_source_face"  # source face index + 1; 0 marks a new face
+EDITED_COMPARISON = "The comparison mesh was edited; press Update Comparison and select again"
+
+
 def selected_preview_faces(obj):
-    """Source face indices of the faces selected on a comparison mesh in Edit Mode."""
+    """Source face indices of the faces selected on a comparison mesh in Edit Mode.
+
+    The comparison is a view, but Edit Mode lets faces be deleted, added or
+    reordered. Each face carries its source index as an attribute, and any
+    change in face or vertex count is refused, so Keep / Hide can never land
+    on a different Body face."""
     import bmesh
     mapping = list(obj.get("underwhere_face_map", []))
     mesh = bmesh.from_edit_mesh(obj.data)
-    return sorted({mapping[f.index] for f in mesh.faces if f.select and f.index < len(mapping)})
+    if len(mesh.faces) != len(mapping) or len(mesh.verts) != obj.get("underwhere_vertex_count", len(mesh.verts)):
+        raise InputError(EDITED_COMPARISON)
+    layer = mesh.faces.layers.int.get(SOURCE_FACE_ATTRIBUTE)
+    selected = set()
+    for face in mesh.faces:
+        if face.select:
+            source = face[layer] - 1 if layer is not None else mapping[face.index]
+            if source < 0:
+                raise InputError(EDITED_COMPARISON)
+            selected.add(source)
+    return sorted(selected)
 
 
 def clear_preview(scene):
@@ -721,6 +740,10 @@ def preview(context, report, mode, show=None):
         visible = [f for f in report["faces"] if f["face"] not in hidden]
         for poly, face in zip(mesh.polygons, visible):
             poly.material_index = names.index(labels[face["face"]])
+        # Source index per face survives deletion and reordering in Edit Mode.
+        source = mesh.attributes.new(SOURCE_FACE_ATTRIBUTE, 'INT', 'FACE')
+        source.data.foreach_set("value", [face["face"] + 1 for face in visible])
+        obj["underwhere_vertex_count"] = len(vertices)
         return obj
     except Exception:
         if obj:

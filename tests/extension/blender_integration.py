@@ -1471,6 +1471,37 @@ class BlenderIntegration(unittest.TestCase):
                          "Results are not saved in .blend files.")
 
 
+    def test_76_edited_comparison_never_moves_keep_hide_to_another_face(self):
+        import bmesh
+        _, _, s = fx.setup(alpha=.5)  # every face Review
+        self.analyze(s)
+        bpy.ops.underwhere.edit_selection(target='COMPARISON', tool='BOX')
+        preview = adapter.current_preview(bpy.context.scene)
+        # Reordering faces keeps each face's source index.
+        bpy.ops.mesh.select_all(action='SELECT')  # sort_elements reorders the selection
+        bpy.ops.mesh.sort_elements(type='REVERSE', elements={'FACE'})
+        bpy.ops.mesh.select_all(action='DESELECT')
+        mesh = bmesh.from_edit_mesh(preview.data)
+        mesh.faces.ensure_lookup_table()
+        mesh.faces[0].select_set(True)  # after reversing, this face shows source face 5
+        bmesh.update_edit_mesh(preview.data)
+        bpy.ops.underwhere.override('EXEC_DEFAULT', action='KEEP')
+        self.assertEqual(workflow.read_report(s)["overrides"], {"5": "KEEP"})
+        # Deleting a face (the reported case) is refused instead of shifting indices.
+        preview = adapter.current_preview(bpy.context.scene)
+        mesh = bmesh.from_edit_mesh(preview.data)
+        mesh.faces.ensure_lookup_table()
+        bmesh.ops.delete(mesh, geom=[mesh.faces[0]], context='FACES')
+        mesh.faces.ensure_lookup_table()
+        mesh.faces[0].select_set(True)
+        bmesh.update_edit_mesh(preview.data)
+        with self.assertRaisesRegex(RuntimeError, "comparison mesh was edited"):
+            bpy.ops.underwhere.override('EXEC_DEFAULT', action='KEEP')
+        self.assertEqual(workflow.read_report(s)["overrides"], {"5": "KEEP"})
+        self.assertEqual(bpy.context.edit_object, preview)
+        bpy.ops.underwhere.finish_selection()
+
+
 if __name__ == "__main__":
     suite = unittest.defaultTestLoader.loadTestsFromTestCase(BlenderIntegration)
     result = unittest.TextTestRunner(verbosity=2).run(suite)
