@@ -1610,6 +1610,8 @@ class BlenderIntegration(unittest.TestCase):
 
 
     def test_80_colours_can_be_drawn_on_the_body_instead_of_beside_it(self):
+        # The comparison beside the Body stays the default.
+        self.assertEqual(ui.UNDERWHERE_Settings.bl_rna.properties["display_target"].default, 'BESIDE')
         body, _, s = fx.setup(alpha=.5)  # every face unsure
         scene = bpy.context.scene
         s.display_target = 'ON_BODY'

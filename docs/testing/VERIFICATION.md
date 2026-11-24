@@ -1,6 +1,6 @@
 # UnderWhere 動作確認（1.2.0）
 
-検証日：2026-11-23。公開リポジトリ：BodyOcclusionCuller。
+検証日：2026-11-24。公開リポジトリ：BodyOcclusionCuller。
 
 ## 環境
 
