@@ -14,7 +14,7 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "addon"))
 sys.path.insert(0, str(Path(__file__).parent))
 import underwhere
-from underwhere import workflow, ui
+from underwhere import workflow, ui, overlay
 import fixtures as fx
 
 OUT = ROOT / "outputs/underwhere"
@@ -116,6 +116,16 @@ def tick():
                 bpy.ops.underwhere.apply(deleted=True)
                 checks.append('deleted_copy_operator')
                 bpy.ops.underwhere.preview()
+                # The colours drawn on the Body itself, through and behind the clothing.
+                s.display_target = 'ON_BODY'
+                assert overlay.is_shown(bpy.context.scene), s.status
+                for xray in (True, False):
+                    s.overlay_xray = xray
+                    bpy.ops.wm.redraw_timer(type='DRAW_WIN_SWAP', iterations=1)
+                    assert overlay.STATS["last_error"] is None, overlay.STATS["last_error"]
+                assert overlay.STATS["draws"] >= 2, "on-Body colours were not drawn"
+                s.display_target = 'BESIDE'
+                checks.append("on_body_overlay_draw")
                 for material in bpy.context.scene.underwhere.occluders[0].object.data.materials:
                     material.use_backface_culling = True
                 area.spaces.active.shading.color_type = 'MATERIAL'

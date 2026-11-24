@@ -6,7 +6,6 @@
 
 - **様々な実アバターでの検証**：判定の妥当性と処理時間を確かめ、頑健性の向上を目指します。
 - **処理の高速化**：CPU のまま、サンプリングの計算をまとめて速くします。
-- **素体への色の重ね表示**：横に比較メッシュを置く代わりに、素体そのものに判定の色を重ねて、衣装を着た状態のまま確認できるようにします。
 - **残す根拠の可視化**：残すと判定した面が実際に見える視点へ View Ray で移動し、比較メッシュと並べて確認できるようにします。
 - **更新の通知**：拡張機能リポジトリから配布し、新しい版が出たら Blender の Get Extensions に表示して、そこから更新できるようにします。（案：GitHub Pages に専用のリポジトリを用意します。更新の確認は、Allow Online Access がオンのときに Blender 本体が行います。UnderWhere 自体はこれまでどおりネットワークに接続しません。）
 - **BOOTH での頒布**：GitHub Releases に加えて、BOOTH でも入手できるようにします。
@@ -45,7 +44,6 @@ These are future plans, not promises about timing or content. They will change w
 
 - **Testing on a variety of real avatars:** check that the verdicts hold up and how long processing takes, and make the analysis more robust.
 - **Faster processing:** still on the CPU, speed up sampling by batching its calculations.
-- **Colours on the Body itself:** instead of a comparison beside it, overlay the verdict colours on the Body, so you can check while it wears the clothing.
 - **Showing why a face is kept:** for a face judged to be kept, jump with View Ray to a viewpoint from which it is actually seen, and check it side by side with the comparison mesh.
 - **Update notifications:** distribute through an extension repository, so that new versions appear in Blender's Get Extensions and can be updated from there. (Plan: a dedicated repository on GitHub Pages. Blender itself checks for updates, only while Allow Online Access is on; UnderWhere itself still never connects to the network.)
 - **Distribution on BOOTH:** make the add-on available on BOOTH as well as on GitHub Releases.

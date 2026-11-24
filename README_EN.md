@@ -28,7 +28,7 @@ In the 3D Viewport, press **N** to open the sidebar and select the UnderWhere ta
 The sidebar has three steps: **Set up**, **Review** and **Export**. It follows Blender's language setting (English or Japanese).
 
 1. **Set up:** select the clothing, then the Body last, press **Use selection**, then **Analyze**.
-2. **Review:** a coloured comparison appears to the right of the Body. Green faces are hideable, blue faces are visible, and yellow faces are unsure. Follow **Next steps** and choose **Keep** or **Hide** for the unsure faces.
+2. **Review:** the verdict colours appear, beside the Body or on the Body itself, as you choose. Green faces are hideable, blue faces are visible, and yellow faces are unsure. Follow **Next steps** and choose **Keep** or **Hide** for the unsure faces.
 3. **Export:** press **Create masked copy**, or **Create copy with faces removed** for FBX export to VRChat.
 
 For more details, see the [User Guide](docs/user/OVERVIEW_EN.md). Japanese: [操作ガイド](docs/user/QUICKSTART_JA.md).

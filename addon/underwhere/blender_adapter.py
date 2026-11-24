@@ -686,7 +686,13 @@ def selected_preview_faces(obj):
     return sorted(selected)
 
 
+#: Called with the scene whenever the comparison is cleared (the on-Body overlay listens).
+CLEAR_HOOKS = []
+
+
 def clear_preview(scene):
+    for hook in list(CLEAR_HOOKS):
+        hook(scene)
     for obj in list(bpy.data.objects):
         if any(obj.get(key) == f"PREVIEW:{scene.name_full}" for key in OWNER_KEYS):
             # Never delete an object the user is editing; operators leave Edit

@@ -11,7 +11,7 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "addon"))
 sys.path.insert(0, str(Path(__file__).parent))
 import underwhere
-from underwhere import blender_adapter as adapter, workflow, ui, i18n
+from underwhere import blender_adapter as adapter, workflow, ui, i18n, overlay
 from underwhere.core.contracts import CANDIDATE, KEEP, REVIEW, UNSAFE, UNCERTAIN
 import fixtures as fx
 
@@ -1066,11 +1066,14 @@ class BlenderIntegration(unittest.TestCase):
         self.assertNotIn("UNDERWHERE_PT_results", drawn)  # nothing to show before analysis
         self.analyze(s)
         s.use_extra_bodies = True  # draws the Body part list
-        for mode in ('CLASSIFY', 'DIFF', 'OUTPUT', 'ORIGINAL', 'POSES', 'OFF'):
-            s.preview_mode = mode
-            drawn = draw_steps()
-            self.assertIn("UNDERWHERE_PT_results", drawn)
-            self.assertIn("UNDERWHERE_PT_output", drawn)
+        for target in ('BESIDE', 'ON_BODY'):
+            s.display_target = target
+            for mode in ('CLASSIFY', 'DIFF', 'OUTPUT', 'ORIGINAL', 'POSES', 'OFF'):
+                s.preview_mode = mode
+                drawn = draw_steps()
+                self.assertIn("UNDERWHERE_PT_results", drawn)
+                self.assertIn("UNDERWHERE_PT_output", drawn)
+        s.display_target = 'BESIDE'
         # Each step shows only its own panels.
         s.ui_step = 'EXPORT'
         self.assertNotIn("UNDERWHERE_PT_inputs", draw_all())
@@ -1604,6 +1607,49 @@ class BlenderIntegration(unittest.TestCase):
         finally:
             prefs.language, prefs.use_translate_interface = language, translate
         self.assertEqual(i18n.t("Analyze"), "Analyze")
+
+
+    def test_80_colours_can_be_drawn_on_the_body_instead_of_beside_it(self):
+        body, _, s = fx.setup(alpha=.5)  # every face unsure
+        scene = bpy.context.scene
+        s.display_target = 'ON_BODY'
+        self.assertEqual(bpy.ops.underwhere.analyze(), {'FINISHED'})
+        self.assertIsNone(adapter.current_preview(scene))  # nothing is added to the scene
+        self.assertTrue(overlay.is_shown(scene))
+        entry = overlay.OVERLAYS[scene.as_pointer()]
+        self.assertEqual(entry["faces"], 6)
+        self.assertEqual(len(entry["positions"]), 36)  # 6 quads, 12 triangles
+        self.assertEqual(set(entry["colors"]), {adapter.COLORS["REVIEW"]})
+        # The paint sits just outside the surface (the cube's half-size is 0.1).
+        self.assertGreater(min(max(abs(c) for c in p) for p in entry["positions"]), 0.1)
+        # Faces are chosen on the Body, and Keep / Hide repaint it.
+        bpy.ops.underwhere.edit_selection(target='COMPARISON', tool='BOX')
+        self.assertEqual(bpy.context.edit_object, body)
+        bpy.ops.mesh.select_all(action='SELECT')
+        bpy.ops.underwhere.override('EXEC_DEFAULT', action='HIDE')
+        bpy.ops.underwhere.finish_selection()
+        self.assertEqual(set(overlay.OVERLAYS[scene.as_pointer()]["colors"]), {adapter.COLORS["MANUAL_HIDE"]})
+        # The colour filter and the views apply on the Body too.
+        s.preview_show = {'REVIEW'}
+        self.assertEqual(overlay.painted_faces(scene), 0)
+        s.preview_show = {'REVIEW', 'MANUAL_HIDE'}
+        s.preview_mode = 'OUTPUT'
+        bpy.ops.underwhere.preview()
+        self.assertEqual(overlay.painted_faces(scene), 6)  # every face is removed by the Hide
+        s.preview_mode = 'ORIGINAL'
+        bpy.ops.underwhere.preview()
+        self.assertEqual(overlay.painted_faces(scene), 0)
+        # Switching back draws the comparison beside the Body and removes the paint.
+        s.preview_mode = 'CLASSIFY'
+        s.display_target = 'BESIDE'
+        self.assertIsNotNone(adapter.current_preview(scene))
+        self.assertFalse(overlay.is_shown(scene))
+        s.display_target = 'ON_BODY'
+        self.assertIsNone(adapter.current_preview(scene))
+        self.assertTrue(overlay.is_shown(scene))
+        # Whatever clears the comparison clears the paint as well.
+        adapter.clear_preview(scene)
+        self.assertFalse(overlay.is_shown(scene))
 
 
 if __name__ == "__main__":

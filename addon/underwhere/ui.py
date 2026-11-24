@@ -18,7 +18,7 @@ from bpy.types import Operator, Panel, PropertyGroup, UIList
 from bpy_extras.io_utils import ExportHelper
 from mathutils import Vector
 
-from . import blender_adapter as adapter, workflow
+from . import blender_adapter as adapter, overlay, workflow
 from .core.contracts import (
     CANDIDATE, KEEP, REVIEW, RESTORE_EXPOSED, RESTORE_UNRESOLVED, UNCERTAIN, UNSAFE,
     existing_mask_warning,
@@ -240,13 +240,41 @@ def comparison_filter(settings):
     return set(settings.preview_show) if settings.preview_mode == 'CLASSIFY' else None
 
 
+def comparison_shown(scene):
+    """True while the verdict colours are on screen, beside the Body or on it."""
+    return adapter.current_preview(scene) is not None or overlay.is_shown(scene)
+
+
 def draw_comparison(context, settings, report):
+    """Draw the verdict colours where the user chose; returns the comparison mesh, if any."""
+    if settings.display_target == 'ON_BODY':
+        adapter.clear_preview(context.scene)
+        if settings.preview_mode != 'OFF':
+            overlay.show(context.scene, report, settings.preview_mode, comparison_filter(settings))
+        return None
     return adapter.preview(context, report, settings.preview_mode, show=comparison_filter(settings))
+
+
+def display_changed(self, context):
+    """Move the colours to the newly chosen place."""
+    scene = getattr(context, "scene", None)
+    if scene is None or not comparison_shown(scene):
+        return
+    try:
+        if editing_comparison(context):
+            bpy.ops.object.mode_set(mode='OBJECT')
+        draw_comparison(context, self, workflow.fresh_report(context, self, verify=False))
+    except Exception as exc:  # A property update cannot report; show it in the status box.
+        self.status = str(exc)
+
+
+def overlay_style_changed(self, context):
+    overlay.redraw()
 
 
 def preview_filter_changed(self, context):
     scene = getattr(context, "scene", None)
-    if scene is None or self.preview_mode != 'CLASSIFY' or adapter.current_preview(scene) is None:
+    if scene is None or self.preview_mode != 'CLASSIFY' or not comparison_shown(scene):
         return
     try:
         was_selecting = editing_comparison(context)
@@ -419,6 +447,16 @@ class UNDERWHERE_Settings(PropertyGroup):
     ], default={'HIDE_CANDIDATE', 'KEEP_EXPOSED', 'REVIEW', 'UNSAFE_EXISTING_MASK',
                 'UNCERTAIN_EXISTING_MASK', 'MANUAL_HIDE', 'MANUAL_KEEP'},
         update=preview_filter_changed)
+    display_target: EnumProperty(name="Where", translation_context=CTX, items=[
+        ('BESIDE', "Beside the Body", "Show a coloured copy beside the Body"),
+        ('ON_BODY', "On the Body", "Draw the colours on the Body itself; nothing is added to the scene"),
+    ], default='BESIDE', update=display_changed)
+    overlay_xray: BoolProperty(name="Show through clothing", default=True, translation_context=CTX,
+                               description="Keep the colours visible under the clothing",
+                               update=overlay_style_changed)
+    overlay_opacity: FloatProperty(name="Opacity", default=0.75, min=0.1, max=1.0, subtype='FACTOR',
+                                   translation_context=CTX, update=overlay_style_changed,
+                                   description="How strongly the colours cover the Body")
 
 
 class SafeOperator:
@@ -796,7 +834,10 @@ class UNDERWHERE_OT_edit_selection(SafeOperator, Operator):
             self.available(context)
             s = context.scene.underwhere
             workflow.fresh_report(context, s, verify=False)
-            if self.target == 'BODY':
+            target = 'BODY' if s.display_target == 'ON_BODY' else self.target
+            if target == 'BODY':
+                if s.display_target == 'ON_BODY' and s.preview_mode != 'OFF' and not overlay.is_shown(context.scene):
+                    draw_comparison(context, s, workflow.fresh_report(context, s))
                 if not editing_body(context, s):
                     select_body_faces(context, s, [])
             else:
@@ -953,7 +994,7 @@ class UNDERWHERE_OT_override(SafeOperator, Operator):
                     report["overrides"][str(index)] = self.action
             report["output_verification"] = adapter.measure_plan(context, s, report)
             workflow.save_report(s, report)
-            if s.preview_mode != 'OFF' and (editing_preview or adapter.current_preview(context.scene)):
+            if s.preview_mode != 'OFF' and (editing_preview or comparison_shown(context.scene)):
                 redrawn = draw_comparison(context, s, workflow.read_report(s))
             else:
                 adapter.clear_preview(context.scene)
@@ -1003,7 +1044,7 @@ class UNDERWHERE_OT_clear_choices(SafeOperator, Operator):
             report["carried_choices"] = 0
             report["output_verification"] = adapter.measure_plan(context, s, report)
             workflow.save_report(s, report)
-            if adapter.current_preview(context.scene) and s.preview_mode != 'OFF':
+            if comparison_shown(context.scene) and s.preview_mode != 'OFF':
                 draw_comparison(context, s, workflow.read_report(s))
             return {'FINISHED'}
         except Exception as exc:
@@ -1432,9 +1473,10 @@ def draw_next_step(layout, item):
         elif action[0] == "analyze":
             row.operator("underwhere.analyze", text=t("Analyze again"), icon='FILE_REFRESH', translate=False)
         elif action[0] == "review":
-            op = row.operator("underwhere.edit_selection", text=t("Pick on the comparison"),
-                              icon='SELECT_SET', translate=False)
-            op.target = 'COMPARISON'
+            on_body = bpy.context.scene.underwhere.display_target == 'ON_BODY'
+            op = row.operator("underwhere.edit_selection", icon='SELECT_SET', translate=False,
+                              text=t("Pick on the Body") if on_body else t("Pick on the comparison"))
+            op.target = 'BODY' if on_body else 'COMPARISON'
             op.tool = 'BOX'
             row.operator("underwhere.select_group", text=t("Select all on the Body"),
                          icon='RESTRICT_SELECT_OFF', translate=False).group = 'REVIEW'
@@ -1663,7 +1705,17 @@ class UNDERWHERE_PT_review(ResultPanel, Panel):
         row = column.row(align=True)
         row.prop(s, "preview_mode", text="")
         row.operator("underwhere.preview", text=t("Update"), icon='FILE_REFRESH', translate=False)
-        if s.preview_mode == 'CLASSIFY':
+        column.row(align=True).prop(s, "display_target", expand=True)
+        on_body = s.display_target == 'ON_BODY'
+        if on_body:
+            row = column.row(align=True)
+            row.prop(s, "overlay_xray")
+            row.prop(s, "overlay_opacity", slider=True)
+        if on_body and s.preview_mode == 'ORIGINAL':
+            column.label(text=t("Nothing is drawn on the Body in this view."), icon='INFO', translate=False)
+        elif on_body and s.preview_mode == 'OUTPUT':
+            column.label(text=t("Removed in the output"), icon='COLLECTION_COLOR_04', translate=False)
+        elif s.preview_mode == 'CLASSIFY':
             grid = column.grid_flow(columns=2, even_columns=True, align=True)
             audit = report["input"]["mode"] == "AUDIT"
             for caption, icon, key in CLASSIFY_LEGEND:
@@ -1680,7 +1732,7 @@ class UNDERWHERE_PT_review(ResultPanel, Panel):
                     column.label(text=t("Inspect several frames to see shades."), icon='ERROR', translate=False)
                 else:
                     column.label(text=t("Share of {count} inspected frames", count=states), translate=False)
-        if s.preview_mode != 'OFF' and colours_hidden(context):
+        if s.preview_mode != 'OFF' and not on_body and colours_hidden(context):
             column.operator("underwhere.show_colours", text=t("Show colours in this view"), icon='SHADING_SOLID',
                             translate=False)
 
@@ -1688,14 +1740,18 @@ class UNDERWHERE_PT_review(ResultPanel, Panel):
         selecting = selecting_on(context, s)
         tool = active_selection_tool(context) if selecting else None
         box.label(text=t("Choose faces"), translate=False)
-        box.prop(s, "selection_target", expand=True)
+        target = 'BODY' if on_body else s.selection_target
+        if on_body:
+            box.label(text=t("Select on the Body"), icon='MESH_DATA', translate=False)
+        else:
+            box.prop(s, "selection_target", expand=True)
         row = box.row(align=True)
         row.scale_y = 1.3
         for key, caption, icon in [('BOX', "Box", 'SELECT_SET'), ('LASSO', "Lasso", 'CURVE_BEZCURVE'),
                                    ('CIRCLE', "Brush", 'BRUSH_DATA')]:
             op = row.operator("underwhere.edit_selection", text=t(caption), icon=icon, translate=False,
-                              depress=selecting == s.selection_target and tool == key)
-            op.target = s.selection_target
+                              depress=selecting == target and tool == key)
+            op.target = target
             op.tool = key
         hint = box.column(align=True)
         if not selecting:

@@ -16,6 +16,9 @@ def reset():
         if mesh.users == 0:
             bpy.data.meshes.remove(mesh)
     s = bpy.context.scene.underwhere
+    s.result_json = ""  # first, so no update below redraws an old result
+    s.display_target = 'BESIDE'
+    s.preview_mode = 'CLASSIFY'
     s.body = None
     s.occluders.clear()
     s.use_extra_bodies = False
