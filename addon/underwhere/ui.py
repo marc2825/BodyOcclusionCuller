@@ -1,6 +1,11 @@
-"""Sidebar panels and undoable operators."""
+"""Sidebar panels and undoable operators.
+
+The sidebar follows three steps: Set up (Body, clothing, analyze), Review
+(result, next steps, decide unsure faces) and Export. Every visible string is
+an English message id translated with i18n.t()."""
 from collections import Counter
 import json
+import re
 import time
 
 import bpy
@@ -18,72 +23,151 @@ from .core.contracts import (
     CANDIDATE, KEEP, REVIEW, RESTORE_EXPOSED, RESTORE_UNRESOLVED, UNCERTAIN, UNSAFE,
     existing_mask_warning,
 )
+from .i18n import CTX, t, tip
 
 JOBS = []
 PRESET_APPLY = set()
 HISTORY_CANCELLED_SCENES = set()
 
 REASON_LABELS = {
-    "EXPOSURE_WITNESS": "露出する光線を検出",
-    "ALL_REQUIRED_FINITE_SAMPLES_OCCLUDED": "検査サンプルはすべて遮蔽",
-    "SURFACE_INTERSECTION": "身体と衣装が交差",
-    "CONTACT_OR_DEPTH_TIE": "接触または奥行きが不明確",
-    "OCCLUDER_TOPOLOGY_AMBIGUITY": "遮蔽物の形状に未解決の問題",
-    "OPENING_BUDGET_EXCEEDED": "開口数が検査上限を超過",
-    "NONMANIFOLD_OCCLUDER": "非多様体の遮蔽物",
-    "SOLIDIFY_OPENING_UNRESOLVED": "厚み付き開口は自動非表示の対象外",
-    "SPATIAL_COVER_INCOMPLETE_OR_DEGENERATE": "検査密度不足または退化面",
-    "ALPHA_OR_TRANSMISSION_UNTRUSTED": "透明度・透過を確認できない",
-    "UNSUPPORTED_SHADER": "未対応のシェーダー",
-    "MISSING_MATERIAL": "マテリアル未指定",
-    "NODE_SURFACE_REQUIRED": "ノードの表面出力が必要",
-    "ANIMATED_MATERIAL_UNSUPPORTED": "マテリアルのアニメーションは未対応",
-    "BACKFACE_CULLING_UNTRUSTED": "裏面カリングを信頼できない",
-    "NO_COMPLETE_EVIDENCE": "検査の根拠が不足",
-    REVIEW: "要確認", KEEP: "露出・残す", CANDIDATE: "非表示の候補",
-    "UNSAFE_EXISTING_MASK": "既存マスクが露出面を隠す",
-    "UNCERTAIN_EXISTING_MASK": "既存マスクが未確認面を隠す",
-    "EXISTING_MASK_DISABLED": "既存マスクが無効になっている",
-    "EXISTING_MASK_HIDES_NOTHING": "既存マスクは何も隠していない",
-    "EXISTING_MASK_HIDES_EVERYTHING": "既存マスクがすべての面を隠している（Invert を確認）",
+    "EXPOSURE_WITNESS": "Seen along a sampled ray",
+    "ALL_REQUIRED_FINITE_SAMPLES_OCCLUDED": "Hidden in every sample",
+    "SURFACE_INTERSECTION": "Body and clothing intersect",
+    "CONTACT_OR_DEPTH_TIE": "Touching the clothing, or depth unclear",
+    "OCCLUDER_TOPOLOGY_AMBIGUITY": "Clothing shape could not be resolved",
+    "OPENING_BUDGET_EXCEEDED": "Clothing has too many openings",
+    "NONMANIFOLD_OCCLUDER": "Clothing mesh is non-manifold",
+    "SOLIDIFY_OPENING_UNRESOLVED": "Opening in Solidify clothing",
+    "SPATIAL_COVER_INCOMPLETE_OR_DEGENERATE": "Sampling too coarse, or a degenerate face",
+    "ALPHA_OR_TRANSMISSION_UNTRUSTED": "Material may be see-through",
+    "UNSUPPORTED_SHADER": "Shader not supported",
+    "MISSING_MATERIAL": "Clothing has no material",
+    "NODE_SURFACE_REQUIRED": "Material needs a node surface",
+    "ANIMATED_MATERIAL_UNSUPPORTED": "Material is animated",
+    "BACKFACE_CULLING_UNTRUSTED": "Backface culling is on",
+    "NO_COMPLETE_EVIDENCE": "Not enough evidence",
+    REVIEW: "Unsure", KEEP: "Visible", CANDIDATE: "Hideable",
+    UNSAFE: "Mask hides a visible face",
+    UNCERTAIN: "Mask hides an unsure face",
+    "EXISTING_MASK_DISABLED": "The existing mask is turned off",
+    "EXISTING_MASK_HIDES_NOTHING": "The existing mask hides nothing",
+    "EXISTING_MASK_HIDES_EVERYTHING": "The existing mask hides every face (check Invert)",
 }
 
-
-# One-line next step for each Review reason (Japanese UI / English UI).
+# One-line next step for each reason a face is unsure.
+_OPAQUE_HINT = "If it is fully opaque, mark it Opaque and analyze again"
+_LOOK_HINT = "Look at it, and choose Hide if it is covered"
+_FIT_HINT = "Fix the fit or weights; choose Hide only to hide poke-through"
 REASON_HINTS = {
-    "ALPHA_OR_TRANSMISSION_UNTRUSTED": ("本当に不透明なら Materials で Opaque にして再解析",
-                                        "If truly opaque, set Opaque in Materials and re-analyze"),
-    "UNSUPPORTED_SHADER": ("本当に不透明なら Materials で Opaque にして再解析",
-                           "If truly opaque, set Opaque in Materials and re-analyze"),
-    "NODE_SURFACE_REQUIRED": ("本当に不透明なら Materials で Opaque にして再解析",
-                              "If truly opaque, set Opaque in Materials and re-analyze"),
-    "MISSING_MATERIAL": ("衣装にマテリアルを割り当てて再解析",
-                         "Assign a material to the clothing and re-analyze"),
-    "ANIMATED_MATERIAL_UNSUPPORTED": ("目視で確認し、隠すなら Hide", "Check visually; Hide if hidden"),
-    "BACKFACE_CULLING_UNTRUSTED": ("カリングを切れるなら切って再解析、無理なら目視で判断",
-                                   "Disable culling and re-analyze, or check visually"),
-    "SURFACE_INTERSECTION": ("衣装の位置やウェイトを直す。突き抜けを隠すだけなら Hide",
-                             "Fix fit or weights; Hide only to conceal poke-through"),
-    "CONTACT_OR_DEPTH_TIE": ("衣装の位置やウェイトを直す。突き抜けを隠すだけなら Hide",
-                             "Fix fit or weights; Hide only to conceal poke-through"),
-    "OCCLUDER_TOPOLOGY_AMBIGUITY": ("表示された衣装のメッシュを直して再解析、または目視で判断",
-                                    "Fix the named clothing mesh, or check visually"),
-    "SOLIDIFY_OPENING_UNRESOLVED": ("目視で確認し、隠すなら Hide", "Check visually; Hide if hidden"),
-    "SPATIAL_COVER_INCOMPLETE_OR_DEGENERATE": ("処理量を Detailed にして再解析。全面がこれなら Body の大きさ（単位）を確認",
-                                               "Use Detailed and re-analyze; if every face shows this, check the Body's scale"),
-    "NO_COMPLETE_EVIDENCE": ("目視で確認し、隠すなら Hide", "Check visually; Hide if hidden"),
+    "ALPHA_OR_TRANSMISSION_UNTRUSTED": _OPAQUE_HINT,
+    "UNSUPPORTED_SHADER": _OPAQUE_HINT,
+    "NODE_SURFACE_REQUIRED": _OPAQUE_HINT,
+    "MISSING_MATERIAL": "Give the clothing a material and analyze again",
+    "ANIMATED_MATERIAL_UNSUPPORTED": _LOOK_HINT,
+    "BACKFACE_CULLING_UNTRUSTED": "Turn culling off and analyze again, or decide by eye",
+    "SURFACE_INTERSECTION": _FIT_HINT,
+    "CONTACT_OR_DEPTH_TIE": _FIT_HINT,
+    "OCCLUDER_TOPOLOGY_AMBIGUITY": "Fix the named clothing mesh, or decide by eye",
+    "SOLIDIFY_OPENING_UNRESOLVED": _LOOK_HINT,
+    "SPATIAL_COVER_INCOMPLETE_OR_DEGENERATE":
+        "Choose Fine and analyze again; if every face shows this, check the Body's scale",
+    "NO_COMPLETE_EVIDENCE": _LOOK_HINT,
 }
 #: Reason codes that describe evidence rather than a cause to act on.
 INFORMATIONAL_REASONS = {"EXPOSURE_WITNESS", "ALL_REQUIRED_FINITE_SAMPLES_OCCLUDED"}
 
+#: How an error code reads to a person: what happened and how to fix it.
+#: {name} is the object named in the message, {detail} the whole message.
+ERROR_TEXT = {
+    "OBJECT_MODE_REQUIRED": "Switch to Object Mode first.",
+    "BODY_MESH_REQUIRED": "Choose a mesh as the Body.",
+    "BODY_PART_REQUIRED": "Remove the empty entries from the Body parts.",
+    "OCCLUDER_MESH_REQUIRED": "Add at least one clothing mesh, and remove empty entries.",
+    "DUPLICATE_OBJECT": "An object is listed twice. The Body and its parts cannot also be clothing.",
+    "MULTI_BODY_AUDIT_UNSUPPORTED": "Checking an existing mask works on one Body object at a time.",
+    "EMPTY_OR_NON_MESH": "{name} is not a mesh with faces.",
+    "LINKED_OR_READ_ONLY": "{name} is linked or read-only. Make a local copy first.",
+    "HIDDEN_INPUT": "{name} is hidden. Show it in this view layer.",
+    "RENDER_HIDDEN_INPUT": "{name} is hidden in renders. Turn rendering on for it.",
+    "CAMERA_VISIBILITY_UNTRUSTED": "{name} is invisible to the camera, a holdout or a shadow catcher.",
+    "COLLECTION_VISIBILITY_UNTRUSTED": "A collection of {name} is excluded from rendering, a holdout or indirect only.",
+    "INSTANCING_UNSUPPORTED": "{name} uses instancing, which is not supported.",
+    "SINGULAR_TRANSFORM": "{name} has a zero or flattened scale. Fix the scale, or apply it (Ctrl+A > Scale) on a working copy.",
+    "MASK_REQUIRED": "Choose the vertex-group Mask modifier to check.",
+    "SMOOTH_MASK_UNSUPPORTED": "Turn off Smooth on the Mask modifier, on a working copy.",
+    "MASK_GROUP_MISSING": "The vertex group of the Mask modifier is missing.",
+    "MASK_VISIBILITY_MISMATCH": "Give the Mask modifier the same viewport and render visibility.",
+    "MASK_MUST_BE_LAST": "Move the Mask modifier to the bottom of the stack.",
+    "MODIFIER_UNSUPPORTED": "The modifier {name} is not supported. Use a working copy with it applied.",
+    "MODIFIER_VISIBILITY_MISMATCH": "The modifier {name} has different viewport and render visibility.",
+    "TOPOLOGY_CORRESPONDENCE_FAILED": "{name} changes its faces when evaluated. Use a working copy with its modifiers applied.",
+    "EMPTY_EVALUATED_MESH": "{name} has no faces after its modifiers.",
+    "NONFINITE_GEOMETRY": "{name} has invalid vertex positions.",
+    "MASK_EVALUATION_MISMATCH": "Blender's result did not match the plan, so nothing was changed. Please report this.",
+    "OUTPUT_EVALUATION_MISMATCH": "Blender's result did not match the plan, so nothing was changed. Please report this.",
+    "DELETED_COPY_EVALUATION_MISMATCH": "Blender's result did not match the plan, so nothing was changed. Please report this.",
+    "FRAMES_REQUIRED": "Enter the frames as numbers separated by commas, for example 1, 10, 20.",
+    "FRAME_LIMIT": "Choose between 1 and 32 valid frames.",
+    "STATE_TOPOLOGY_OR_MASK_CHANGED": "The Body's faces or the existing mask change between frames, which is not supported.",
+    "INPUT_CHANGED_DURING_ANALYSIS": "Something changed during the analysis. Analyze again.",
+    "ANALYSIS_ALREADY_RUNNING": "An analysis is already running.",
+    "ANALYSIS_REQUIRED": "Analyze first.",
+    "EDIT_MODE_ELSEWHERE": "Leave Edit Mode on {name} first (Tab).",
+    "OTHER_MODE_ELSEWHERE": "Switch {name} back to Object Mode first.",
+}
 
-def is_japanese():
-    return bpy.context.preferences.view.language.startswith('ja')
+
+def reason_label(code):
+    return t(REASON_LABELS.get(code, code))
 
 
 def reason_hint(code):
     hint = REASON_HINTS.get(code)
-    return None if hint is None else hint[0 if is_japanese() else 1]
+    return None if hint is None else t(hint)
+
+
+BREAK_AFTER = "、。）」』！？・ "
+NO_LINE_START = "、。）」』！？ー"
+
+
+def wrap(text, width=None):
+    """Split text into sidebar-width lines (labels never wrap by themselves)."""
+    cjk = any(ord(character) > 0x2E7F for character in text)
+    width = width or (21 if cjk else 40)
+    if cjk:
+        lines = []
+        while len(text) > width:
+            low = max(1, width - 8)
+            after = [text.rfind(mark, low, width) + 1 for mark in BREAK_AFTER]
+            before = [text.rfind(mark, low, width) for mark in "「『（"]  # break before an opening bracket
+            cut = max([position for position in after + before if position > 1], default=width)
+            if text[cut - 1] in "「『（":
+                cut -= 1
+            while cut < len(text) and text[cut] in NO_LINE_START:
+                cut += 1
+            lines.append(text[:cut])
+            text = text[cut:]
+        return lines + [text] if text else (lines or [""])
+    lines, line = [], ""
+    for word in text.split():
+        if line and len(line) + 1 + len(word) > width:
+            lines.append(line)
+            line = word
+        else:
+            line = f"{line} {word}".strip()
+    return lines + [line] if line else (lines or [""])
+
+
+def describe_message(text):
+    """A stored status or error message, as a sentence for people."""
+    if text.startswith("STALE"):
+        return t(stale_explanation(text)[0]) + " " + t("Analyze again to continue.")
+    match = re.match(r"^([A-Z][A-Z0-9_]+)(?::\s*(.*))?$", text, re.S)
+    if match and match.group(1) in ERROR_TEXT:
+        code, detail = match.group(1), match.group(2) or ""
+        name = detail.split(";")[0].strip()
+        return t(ERROR_TEXT[code], name=name, detail=detail) + f" ({code})"
+    return t(text)
 
 
 def review_reason_counts(report):
@@ -102,7 +186,7 @@ def editing_comparison(context):
 
 
 def leave_other_edit_mode_message(context):
-    return f"Leave Edit Mode on {context.edit_object.name} first (Tab), then press Box, Lasso or Brush"
+    return f"EDIT_MODE_ELSEWHERE: {context.edit_object.name}"
 
 
 def start_comparison_selection(context, obj, *, clear=True):
@@ -148,8 +232,8 @@ def face_caption(report, index):
     if len(parts) > 1:
         for part in parts:
             if part["face_offset"] <= index < part["face_offset"] + part["face_count"]:
-                return f"{part['name']} face {index - part['face_offset']}"
-    return f"Face {index}"
+                return t("{part} face {index}", part=part["name"], index=index - part["face_offset"])
+    return t("Face {index}", index=index)
 
 
 def comparison_filter(settings):
@@ -171,7 +255,7 @@ def preview_filter_changed(self, context):
         obj = draw_comparison(context, self, workflow.fresh_report(context, self, verify=False))
         if was_selecting and obj is not None:
             start_comparison_selection(context, obj)
-    except Exception as exc:  # A property update cannot report; show it in the status line.
+    except Exception as exc:  # A property update cannot report; show it in the status box.
         self.status = str(exc)
 
 
@@ -207,10 +291,6 @@ def select_body_faces(context, settings, indices):
         if region:
             with context.temp_override(region=region):
                 bpy.ops.view3d.view_selected(use_all_regions=False)
-
-
-def reason_label(code):
-    return REASON_LABELS.get(code, code) if bpy.context.preferences.view.language.startswith('ja') else code.replace('_', ' ').capitalize()
 
 
 def input_changed(self, context):
@@ -254,92 +334,122 @@ class UNDERWHERE_Occluder(PropertyGroup):
     object: PointerProperty(type=bpy.types.Object, poll=mesh_poll, update=input_changed)
 
 
+STEPS = [
+    ('SETUP', "Set up", "Choose the Body and its clothing, then analyze"),
+    ('REVIEW', "Review", "See the result and decide the unsure faces"),
+    ('EXPORT', "Export", "Create the output copy"),
+]
+
+
 class UNDERWHERE_Settings(PropertyGroup):
-    body: PointerProperty(name="Body", type=bpy.types.Object, poll=mesh_poll, update=input_changed)
+    body: PointerProperty(name="Body", type=bpy.types.Object, poll=mesh_poll, update=input_changed,
+                          description="The avatar's body mesh. It is never changed",
+                          translation_context=CTX)
     use_extra_bodies: BoolProperty(
-        name="Body has several objects", update=input_changed,
+        name="Body has several objects", update=input_changed, translation_context=CTX,
         description="Also inspect separate Body objects such as a head; each gets its own output copy. "
-                    "Body objects do not hide each other, only the occluders do")
+                    "Body objects do not hide each other, only the clothing does")
     extra_bodies: CollectionProperty(type=UNDERWHERE_Occluder)
     extra_body_index: IntProperty(default=0)
     occluders: CollectionProperty(type=UNDERWHERE_Occluder)
     occluder_index: IntProperty(default=0)
-    mode: EnumProperty(name="Mode", items=[
-        ('GENERATE', "Generate Mask", "Find finite-sample hide candidates"),
-        ('AUDIT', "Audit Existing Mask", "Inspect an existing vertex-group Mask Modifier"),
+    mode: EnumProperty(name="Purpose", translation_context=CTX, items=[
+        ('GENERATE', "Find hideable faces", "Find the Body faces that the clothing covers"),
+        ('AUDIT', "Check an existing mask", "Check a vertex-group Mask modifier that already hides faces"),
     ], update=input_changed)
-    existing_mask: StringProperty(name="Existing Mask", update=input_changed)
-    scope: EnumProperty(name="States", items=[
-        ('CURRENT_POSE_ONLY', "Current Pose", "Inspect the current frame and subframe"),
-        ('EXPLICIT_FRAMES', "Current + Selected Frames", "Always inspect the current frame/subframe, plus listed frames; no guarantee between frames"),
+    existing_mask: StringProperty(name="Existing mask", update=input_changed, translation_context=CTX)
+    scope: EnumProperty(name="Poses", translation_context=CTX, items=[
+        ('CURRENT_POSE_ONLY', "Current pose", "Inspect only the pose on the current frame"),
+        ('EXPLICIT_FRAMES', "Current pose and listed frames",
+         "Also inspect the listed frames. A face is hideable only if every inspected frame hides it; "
+         "poses between frames are not checked"),
     ], update=input_changed)
-    frames: StringProperty(name="Frames", default="1, 10, 20", update=input_changed)
+    frames: StringProperty(name="Frames", default="1, 10, 20", update=input_changed, translation_context=CTX,
+                           description="Frame numbers separated by commas")
     issues: CollectionProperty(type=UNDERWHERE_Issue)
     issue_index: IntProperty(update=issue_changed)
-    preset: EnumProperty(name="Work budget", items=[
-        ('QUICK', "Quick", "Coarser finite sampling; not a safety level"),
-        ('BALANCED', "Balanced", "Moderate finite sampling; not a safety level"),
-        ('DETAILED', "Detailed", "Finer finite sampling; not a safety level"),
-        ('CUSTOM', "Custom", "Manually edited sample settings"),
+    preset: EnumProperty(name="Detail", translation_context=CTX, items=[
+        ('QUICK', "Fast", "Coarse sampling for a quick first look"),
+        ('BALANCED', "Standard", "Recommended sampling"),
+        ('DETAILED', "Fine", "Finer sampling; slower"),
+        ('CUSTOM', "Custom", "Your own sampling values"),
     ], default='BALANCED', update=preset_changed)
-    spatial_step: FloatProperty(name="Spatial step (metres)", default=0.05,
+    spatial_step: FloatProperty(name="Sample spacing (metres)", default=0.05, translation_context=CTX,
                                 min=0.00001, max=100.0, update=budget_changed)
-    angle: FloatProperty(name="Angular step (degrees)", default=45.0, min=15.0,
+    angle: FloatProperty(name="Direction step (degrees)", default=45.0, min=15.0, translation_context=CTX,
                         max=90.0, update=budget_changed)
-    touch_tolerance: FloatProperty(name="Contact tolerance (metres)", default=0.00001,
+    touch_tolerance: FloatProperty(name="Contact tolerance (metres)", default=0.00001, translation_context=CTX,
                                   min=0.0000001, max=0.01, precision=7, update=budget_changed)
     advanced: BoolProperty(name="Advanced")
     status: StringProperty(default="Choose Body and occluders")
+    #: Preflight details for the status box (JSON, this session only).
+    notice: StringProperty(options={'HIDDEN', 'SKIP_SAVE'})
     # Compatibility field name; contains only a small session revision reference.
     result_json: StringProperty(options={'HIDDEN'})
+    #: Your Keep / Hide choices, saved with the file and restored when the faces match.
+    saved_choices: StringProperty(options={'HIDDEN'})
     progress: FloatProperty(min=0.0, max=1.0, subtype='FACTOR', options={'SKIP_SAVE'})
     cancel_requested: BoolProperty(options={'SKIP_SAVE'})
-    face_index: IntProperty(name="Source face", min=0)
-    selection_target: EnumProperty(name="Select on", items=[
-        ('COMPARISON', "Comparison", "Select on the colored comparison mesh beside the Body"),
+    ui_step: EnumProperty(name="Step", items=STEPS, default='SETUP', translation_context=CTX)
+    face_index: IntProperty(name="Face", min=0, translation_context=CTX)
+    selection_target: EnumProperty(name="Select on", translation_context=CTX, items=[
+        ('COMPARISON', "Comparison", "Select on the coloured copy beside the Body"),
         ('BODY', "Body", "Select on the Body itself"),
     ], default='COMPARISON')
     override_review_only: BoolProperty(
-        name="Only change Review faces", default=True,
-        description="Keep / Hide affect only Review and existing-mask issue faces in the selection, "
-                    "so a rough box, lasso or paint selection never overrides Keep faces")
-    preview_mode: EnumProperty(name="Compare", items=[
-        ('CLASSIFY', "Classification", "Color evidence on a comparison mesh beside the source"),
-        ('ORIGINAL', "Unmasked", "Show the unmasked sampled geometry beside the source"),
-        ('OUTPUT', "Output", "Show the proposed vertex Mask output beside the source"),
-        ('DIFF', "Before / After", "Color faces by how the output changes the existing mask"),
-        ('POSES', "Poses", "Color faces by the share of inspected frames in which they were hidden"),
-        ('OFF', "Off", "Remove comparison objects"),
+        name="Only change unsure faces", default=True, translation_context=CTX,
+        description="Keep and Hide change only the unsure faces in your selection (and faces an existing mask "
+                    "hides wrongly), so a rough selection never changes decided faces")
+    preview_mode: EnumProperty(name="Show", translation_context=CTX, items=[
+        ('CLASSIFY', "Verdicts", "Colour each face by its verdict"),
+        ('ORIGINAL', "Without mask", "Show the Body without any mask"),
+        ('OUTPUT', "After output", "Show the Body as the output will look"),
+        ('DIFF', "Before / After", "Colour faces by how the output changes the existing mask"),
+        ('POSES', "Poses", "Colour faces by the share of inspected frames that hide them"),
+        ('OFF', "Off", "Remove the coloured copy"),
     ], default='CLASSIFY')
-    preview_show: EnumProperty(name="Show", options={'ENUM_FLAG'}, items=[
-        ('HIDE_CANDIDATE', "Candidate", "Show hide candidates on the comparison"),
-        ('KEEP_EXPOSED', "Keep", "Show faces seen in an inspected state"),
-        ('REVIEW', "Review", "Show undecided faces"),
-        ('UNSAFE_EXISTING_MASK', "Mask hides exposed", "Show faces the existing mask hides although they are seen"),
-        ('UNCERTAIN_EXISTING_MASK', "Mask hides undecided", "Show faces the existing mask hides although undecided"),
-        ('MANUAL_HIDE', "Hidden by you", "Show faces you set to Hide"),
-        ('MANUAL_KEEP', "Kept by you", "Show faces you set to Keep"),
+    preview_show: EnumProperty(name="Colours shown", options={'ENUM_FLAG'}, translation_context=CTX, items=[
+        ('HIDE_CANDIDATE', "Hideable", "Show hideable faces"),
+        ('KEEP_EXPOSED', "Visible", "Show faces seen in an inspected pose"),
+        ('REVIEW', "Unsure", "Show unsure faces"),
+        ('UNSAFE_EXISTING_MASK', "Mask hides visible", "Show visible faces that the existing mask hides"),
+        ('UNCERTAIN_EXISTING_MASK', "Mask hides unsure", "Show unsure faces that the existing mask hides"),
+        ('MANUAL_HIDE', "Hidden by you", "Show faces you chose to hide"),
+        ('MANUAL_KEEP', "Kept by you", "Show faces you chose to keep"),
     ], default={'HIDE_CANDIDATE', 'KEEP_EXPOSED', 'REVIEW', 'UNSAFE_EXISTING_MASK',
                 'UNCERTAIN_EXISTING_MASK', 'MANUAL_HIDE', 'MANUAL_KEEP'},
         update=preview_filter_changed)
 
 
 class SafeOperator:
+    bl_translation_context = CTX
+
     def fail(self, context, exc):
         context.scene.underwhere.status = str(exc)
-        self.report({'ERROR'}, str(exc))
+        self.report({'ERROR'}, describe_message(str(exc)))
         return {'CANCELLED'}
 
     def available(self, context):
         if workflow.scene_key(context.scene) in workflow.BUSY:
-            raise adapter.InputError("Wait for analysis or cancel it first")
+            raise adapter.InputError("Wait for the analysis to finish, or cancel it.")
         migrate_settings(context.scene)
+
+
+def after_analysis(context, settings):
+    """Show the result right away: move to Review and draw the coloured copy."""
+    settings.ui_step = 'REVIEW'
+    if settings.preview_mode == 'OFF':
+        return
+    try:
+        draw_comparison(context, settings, workflow.read_report(settings))
+    except Exception as exc:  # The comparison is a convenience; the result itself stands.
+        settings.status = str(exc)
 
 
 class UNDERWHERE_OT_setup(SafeOperator, Operator):
     bl_idname = "underwhere.use_selection"
-    bl_label = "Use Selection"
-    bl_description = "Active mesh is Body; other selected meshes become occluders"
+    bl_label = "Use selection"
+    bl_description = "Set the active mesh as the Body and the other selected meshes as clothing. Select the Body last"
     bl_options = {'REGISTER', 'UNDO'}
 
     def execute(self, context):
@@ -347,7 +457,7 @@ class UNDERWHERE_OT_setup(SafeOperator, Operator):
             self.available(context)
             body = context.active_object
             if body is None or not mesh_poll(None, body):
-                raise adapter.InputError("Select the Body last so it is the active mesh")
+                raise adapter.InputError("Select the Body last, so that it is the active mesh.")
             s = context.scene.underwhere
             s.body = body
             s.occluders.clear()
@@ -355,6 +465,7 @@ class UNDERWHERE_OT_setup(SafeOperator, Operator):
             for obj in context.selected_objects:
                 if obj != body and obj not in parts and mesh_poll(None, obj):
                     s.occluders.add().object = obj
+            s.ui_step = 'SETUP'
             return {'FINISHED'}
         except Exception as exc:
             return self.fail(context, exc)
@@ -362,8 +473,8 @@ class UNDERWHERE_OT_setup(SafeOperator, Operator):
 
 class UNDERWHERE_OT_occluder(SafeOperator, Operator):
     bl_idname = "underwhere.occluder"
-    bl_label = "Edit Occluder List"
-    bl_description = "Add an occluder slot or remove the selected entry; Analyze again after changes"
+    bl_label = "Edit clothing list"
+    bl_description = "Add a clothing slot, or remove the chosen one"
     bl_options = {'REGISTER', 'UNDO'}
     remove: BoolProperty()
 
@@ -385,9 +496,9 @@ class UNDERWHERE_OT_occluder(SafeOperator, Operator):
 
 class UNDERWHERE_OT_body_part(SafeOperator, Operator):
     bl_idname = "underwhere.body_part"
-    bl_label = "Edit Body Part List"
+    bl_label = "Edit Body parts"
     bl_description = ("Add the selected meshes that are not used yet (or an empty slot) as Body parts, "
-                      "or remove the chosen entry; Analyze again after changes")
+                      "or remove the chosen one")
     bl_options = {'REGISTER', 'UNDO'}
     remove: BoolProperty()
 
@@ -414,8 +525,8 @@ class UNDERWHERE_OT_body_part(SafeOperator, Operator):
 
 class UNDERWHERE_OT_preflight(SafeOperator, Operator):
     bl_idname = "underwhere.preflight"
-    bl_label = "Preflight"
-    bl_description = "Check inputs without analyzing: geometry, modifiers, material trust and the existing mask"
+    bl_label = "Check inputs"
+    bl_description = "Check the Body, clothing, modifiers and materials without analyzing"
 
     def execute(self, context):
         key = workflow.scene_key(context.scene)
@@ -426,19 +537,18 @@ class UNDERWHERE_OT_preflight(SafeOperator, Operator):
             state, _ = adapter.snapshot(context, s)
             verdicts = Counter(m["verdict"] for o in state["occluders"] for m in o["materials"]
                                if m["verdict"] not in TRUSTED_MATERIALS)
-            untrusted = sum(verdicts.values())
-            missing = sum(not o["materials"] for o in state["occluders"])
-            mask_warning = existing_mask_warning(
-                s.mode, state["existing_mask"], len(state["body"]["polygons"]))
-            text = "Preflight OK; " + size_caption(state["body_size_metres"],
-                                                   state["settings"]["scale_normalization"])
-            text += f"; {untrusted + missing} untrusted material slots/objects"
-            if verdicts:
-                text += " (" + ", ".join(f"{reason_label(v)} {n}" for v, n in verdicts.most_common(3)) + ")"
-            if mask_warning:
-                text += "; " + reason_label(mask_warning)
-            s.status = text
-            self.report({'WARNING'} if untrusted + missing or mask_warning else {'INFO'}, text)
+            notice = {
+                "size": state["body_size_metres"], "factor": state["settings"]["scale_normalization"],
+                "untrusted": dict(verdicts.most_common(3)),
+                "untrusted_total": sum(verdicts.values()) + sum(not o["materials"] for o in state["occluders"]),
+                "mask_warning": existing_mask_warning(s.mode, state["existing_mask"],
+                                                      len(state["body"]["polygons"])),
+            }
+            s.notice = json.dumps(notice)
+            s.status = "Preflight OK"
+            lines = preflight_lines(notice)
+            self.report({'WARNING'} if notice["untrusted_total"] or notice["mask_warning"] else {'INFO'},
+                        " ".join(lines))
             return {'FINISHED'}
         except Exception as exc:
             return self.fail(context, exc)
@@ -449,7 +559,7 @@ class UNDERWHERE_OT_preflight(SafeOperator, Operator):
 class UNDERWHERE_OT_analyze(SafeOperator, Operator):
     bl_idname = "underwhere.analyze"
     bl_label = "Analyze"
-    bl_description = "Inspect the selected states; use Cancel Analysis or Esc in this viewport to stop"
+    bl_description = "Find the Body faces that the clothing covers. Press Esc over this view, or Cancel, to stop"
     bl_options = {'REGISTER', 'UNDO'}
     _iterator = None
     _timer = None
@@ -457,7 +567,9 @@ class UNDERWHERE_OT_analyze(SafeOperator, Operator):
     def execute(self, context):
         try:
             self.available(context)
-            workflow.run_sync(context, context.scene.underwhere)
+            s = context.scene.underwhere
+            workflow.run_sync(context, s)
+            after_analysis(context, s)
             return {'FINISHED'}
         except Exception as exc:
             return self.fail(context, exc)
@@ -535,6 +647,7 @@ class UNDERWHERE_OT_analyze(SafeOperator, Operator):
                 except StopIteration as done:
                     workflow.finish(context, s, done.value, self._elapsed)
                     self.cleanup()
+                    after_analysis(context, s)
                     return {'FINISHED'}
                 s.status = step["stage"]
                 s.progress = step["progress"]
@@ -551,8 +664,9 @@ class UNDERWHERE_OT_analyze(SafeOperator, Operator):
 
 class UNDERWHERE_OT_cancel(Operator):
     bl_idname = "underwhere.cancel"
-    bl_label = "Cancel Analysis"
-    bl_description = "Stop the active analysis and leave the source unchanged"
+    bl_label = "Cancel"
+    bl_description = "Stop the analysis. Nothing is changed"
+    bl_translation_context = CTX
 
     def execute(self, context):
         context.scene.underwhere.cancel_requested = True
@@ -561,8 +675,8 @@ class UNDERWHERE_OT_cancel(Operator):
 
 class UNDERWHERE_OT_preview(SafeOperator, Operator):
     bl_idname = "underwhere.preview"
-    bl_label = "Update Comparison"
-    bl_description = "Show classification, sampled geometry or proposed output beside the Body"
+    bl_label = "Update comparison"
+    bl_description = "Redraw the coloured copy beside the Body"
     bl_options = {'REGISTER', 'UNDO'}
 
     def execute(self, context):
@@ -588,11 +702,11 @@ class UNDERWHERE_OT_preview(SafeOperator, Operator):
 
 class UNDERWHERE_OT_face(SafeOperator, Operator):
     bl_idname = "underwhere.face"
-    bl_label = "Inspect Source Face"
-    bl_description = "Select and focus a source face, browse issues, or view its recorded ray"
+    bl_label = "Inspect face"
+    bl_description = "Select a face on the Body, go to the next unsure face, or look along the ray that saw it"
     bl_options = {'REGISTER', 'UNDO'}
-    action: EnumProperty(items=[('SELECT', "Select", ""), ('NEXT', "Next Issue", ""),
-                                ('VIEW', "View Witness", "")])
+    action: EnumProperty(translation_context=CTX, items=[('SELECT', "Select", ""), ('NEXT', "Next", ""),
+                                                         ('VIEW', "View ray", "")])
 
     def execute(self, context):
         try:
@@ -609,9 +723,9 @@ class UNDERWHERE_OT_face(SafeOperator, Operator):
             face = report["faces"][min(s.face_index, len(report["faces"]) - 1)]
             if self.action == 'VIEW':
                 if not face["witness"]:
-                    raise adapter.InputError("This face has no ray witness")
+                    raise adapter.InputError("No ray was recorded for this face.")
                 if context.space_data.type != 'VIEW_3D':
-                    raise adapter.InputError("Use View Witness in a 3D View")
+                    raise adapter.InputError("Use View ray from a 3D View.")
                 witness = face["witness"]
                 if (context.scene.frame_current, context.scene.frame_subframe) != (
                         witness['frame'], witness['subframe']):
@@ -662,19 +776,19 @@ def active_selection_tool(context):
 
 class UNDERWHERE_OT_edit_selection(SafeOperator, Operator):
     bl_idname = "underwhere.edit_selection"
-    bl_label = "Select Faces"
-    bl_description = ("Start face selection on the colored comparison (or the Body) with the chosen "
-                      "tool, then use Keep / Hide. Switching tools keeps the current selection")
+    bl_label = "Select faces"
+    bl_description = ("Start selecting faces with this tool, on the coloured copy or on the Body. "
+                      "Switching tools keeps the selection")
     bl_options = {'REGISTER', 'UNDO'}
-    target: EnumProperty(items=[
-        ('COMPARISON', "On Comparison", "Select on the colored comparison mesh beside the Body"),
-        ('BODY', "On Body", "Select on the Body itself"),
+    target: EnumProperty(translation_context=CTX, items=[
+        ('COMPARISON', "Comparison", "Select on the coloured copy beside the Body"),
+        ('BODY', "Body", "Select on the Body itself"),
     ])
-    tool: EnumProperty(items=[
+    tool: EnumProperty(translation_context=CTX, items=[
         ('NONE', "Current tool", "Keep the active selection tool"),
         ('BOX', "Box", "Drag a rectangle"),
         ('LASSO', "Lasso", "Draw a free-form outline"),
-        ('CIRCLE', "Brush", "Paint over faces with a circle brush (mouse wheel changes its size)"),
+        ('CIRCLE', "Brush", "Paint over faces with a circle brush (the mouse wheel changes its size)"),
     ], default='NONE')
 
     def execute(self, context):
@@ -701,7 +815,7 @@ class UNDERWHERE_OT_edit_selection(SafeOperator, Operator):
                     start_comparison_selection(context, obj)
             if self.tool != 'NONE' and context.area and context.area.type == 'VIEW_3D':
                 bpy.ops.wm.tool_set_by_id(name=SELECTION_TOOLS[self.tool])
-            self.report({'INFO'}, "Drag over faces; Shift adds, Ctrl removes. Then Keep / Hide")
+            self.report({'INFO'}, t("Drag over faces. Shift adds, Ctrl removes. Then choose Keep or Hide."))
             return {'FINISHED'}
         except Exception as exc:
             return self.fail(context, exc)
@@ -712,6 +826,7 @@ class UNDERWHERE_OT_finish_selection(Operator):
     bl_label = "Done"
     bl_description = "Stop selecting faces and return to Object Mode"
     bl_options = {'REGISTER', 'UNDO'}
+    bl_translation_context = CTX
 
     @classmethod
     def poll(cls, context):
@@ -734,13 +849,13 @@ class UNDERWHERE_OT_finish_selection(Operator):
 
 class UNDERWHERE_OT_select_group(SafeOperator, Operator):
     bl_idname = "underwhere.select_group"
-    bl_label = "Select Faces in Bulk"
-    bl_description = "Select every matching Body face in Edit Mode, then use Keep / Hide on them at once"
+    bl_label = "Select faces at once"
+    bl_description = "Select every matching face on the Body, then choose Keep or Hide for all of them"
     bl_options = {'REGISTER', 'UNDO'}
-    group: EnumProperty(items=[
-        ('REVIEW', "All Review", "Every face that could not be decided"),
-        ('EXISTING', "Existing mask issues", "Faces the existing mask hides although they are exposed or undecided"),
-        ('REASON', "By reason", "Review or existing-mask faces with one reason code"),
+    group: EnumProperty(translation_context=CTX, items=[
+        ('REVIEW', "All unsure", "Every face that could not be decided"),
+        ('EXISTING', "Mask issues", "Faces the existing mask hides although they are visible or unsure"),
+        ('REASON', "By reason", "Unsure or mask-issue faces with one reason"),
     ])
     reason: StringProperty()
 
@@ -759,35 +874,40 @@ class UNDERWHERE_OT_select_group(SafeOperator, Operator):
             if not indices:
                 raise adapter.InputError("No matching faces")
             select_body_faces(context, s, indices)
-            self.report({'INFO'}, f"Selected {len(indices)} faces; Keep / Hide applies to all of them")
+            self.report({'INFO'}, t("Selected: {count}. Keep or Hide applies to all of them.",
+                                    count=len(indices)))
             return {'FINISHED'}
         except Exception as exc:
             return self.fail(context, exc)
 
 
+ACTION_CAPTIONS = {'KEEP': "Keep", 'HIDE': "Hide", 'RESET': "Clear choice"}
+
+
 class UNDERWHERE_OT_override(SafeOperator, Operator):
     bl_idname = "underwhere.override"
-    bl_label = "Manual Face Override"
-    bl_description = "Change requested output; original evidence and warnings remain"
+    bl_label = "Keep or hide faces"
+    bl_description = "Change the output for the selected faces. The original verdicts stay recorded"
     bl_options = {'REGISTER', 'UNDO'}
-    action: EnumProperty(items=[('KEEP', "Keep", ""), ('HIDE', "Hide", ""),
-                                ('RESET', "Clear Override", "")])
-    selected: BoolProperty(name="Use selected faces", default=True)
-    review_only: BoolProperty(name="Only change Review faces", default=False)
+    action: EnumProperty(translation_context=CTX, items=[('KEEP', "Keep", ""), ('HIDE', "Hide", ""),
+                                                         ('RESET', "Clear choice", "")])
+    selected: BoolProperty(name="Use selected faces", default=True, translation_context=CTX)
+    review_only: BoolProperty(name="Only change unsure faces", default=False, translation_context=CTX)
 
     def invoke(self, context, event):
         if self.action == 'HIDE':
             return context.window_manager.invoke_confirm(
-                self, event, title="Manual Hide", message="Hide can override exposure or uncertainty. Evidence stays visible.")
+                self, event, title=t("Hide these faces?"),
+                message=t("Hide can cover a face that was seen or unsure. Ctrl+Z undoes it."))
         return self.execute(context)
 
     @classmethod
     def description(cls, context, properties):
-        return {
-            'KEEP': "Always show the selected faces in the output",
+        return tip({
+            'KEEP': "Always keep the selected faces in the output",
             'HIDE': "Hide the selected faces in the output. Asks first; Ctrl+Z undoes it",
-            'RESET': "Remove your Keep / Hide from the selected faces and use the automatic result",
-        }.get(properties.action, cls.bl_description)
+            'RESET': "Remove your choice from the selected faces and use the automatic verdict",
+        }.get(properties.action, cls.bl_description))
 
     def execute(self, context):
         preview_obj = context.edit_object if editing_comparison(context) else None
@@ -823,7 +943,7 @@ class UNDERWHERE_OT_override(SafeOperator, Operator):
                 indices = review_faces_only(report, indices)
                 if not indices:
                     raise adapter.InputError(
-                        "No Review faces in the selection; turn off 'Only change Review faces' to change others")
+                        "No unsure faces in the selection. Turn off Only change unsure faces to change others.")
             for index in indices:
                 if index >= len(report["faces"]):
                     raise adapter.InputError("Face index out of range")
@@ -837,9 +957,10 @@ class UNDERWHERE_OT_override(SafeOperator, Operator):
                 redrawn = draw_comparison(context, s, workflow.read_report(s))
             else:
                 adapter.clear_preview(context.scene)
-            caption = {'KEEP': "Keep", 'HIDE': "Hide", 'RESET': "Clear"}[self.action]
-            follow_up = "; select more or press Done" if editing_preview and redrawn else ""
-            self.report({'INFO'}, f"{caption} applied to {len(indices)} faces{follow_up}")
+            message = t("{action}: {count}", action=t(ACTION_CAPTIONS[self.action]), count=len(indices))
+            if editing_preview and redrawn:
+                message += " " + t("Select more, or press Done.")
+            self.report({'INFO'}, message)
             return {'FINISHED'}
         except Exception as exc:
             return self.fail(context, exc)
@@ -862,20 +983,46 @@ class UNDERWHERE_OT_override(SafeOperator, Operator):
             pass  # The comparison was removed; Object Mode is a safe place to stop.
 
 
+class UNDERWHERE_OT_clear_choices(SafeOperator, Operator):
+    bl_idname = "underwhere.clear_choices"
+    bl_label = "Clear all choices"
+    bl_description = "Remove every Keep and Hide you chose, and use the automatic verdicts again"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    def invoke(self, context, event):
+        return context.window_manager.invoke_confirm(
+            self, event, title=t("Clear all choices?"),
+            message=t("Every Keep and Hide you chose is removed. Ctrl+Z undoes it."))
+
+    def execute(self, context):
+        try:
+            self.available(context)
+            s = context.scene.underwhere
+            report = workflow.fresh_report(context, s).copy()
+            report["overrides"] = {}
+            report["carried_choices"] = 0
+            report["output_verification"] = adapter.measure_plan(context, s, report)
+            workflow.save_report(s, report)
+            if adapter.current_preview(context.scene) and s.preview_mode != 'OFF':
+                draw_comparison(context, s, workflow.read_report(s))
+            return {'FINISHED'}
+        except Exception as exc:
+            return self.fail(context, exc)
+
+
 class UNDERWHERE_OT_apply(SafeOperator, Operator):
     bl_idname = "underwhere.apply"
-    bl_label = "Apply to New Copy"
-    bl_description = "Create an independent Body copy with a new group and Mask; preserve source"
+    bl_label = "Create output copy"
+    bl_description = "Create a copy of the Body that hides the hideable faces. The original is not changed"
     bl_options = {'REGISTER', 'UNDO'}
-    deleted: BoolProperty(name="Create deleted copy", default=False,
-                         description="Remove verified vertices on a new copy, preserving shape keys, weights and UVs for FBX")
+    deleted: BoolProperty(name="Remove the faces", default=False, translation_context=CTX,
+                         description="Delete the faces on the copy instead of masking them, keeping shape keys, "
+                                     "weights and UVs (for FBX)")
 
     def invoke(self, context, event):
         try:
             self.available(context)
-            report = workflow.fresh_report(context, context.scene.underwhere, verify=False)
-            plan = report["output_plan"]
-            self.report({'INFO'}, f"Output: {plan['hidden_polygon_count']} polygons hidden")
+            workflow.fresh_report(context, context.scene.underwhere, verify=False)
             return context.window_manager.invoke_props_dialog(self, width=440)
         except Exception as exc:
             return self.fail(context, exc)
@@ -883,21 +1030,21 @@ class UNDERWHERE_OT_apply(SafeOperator, Operator):
     def draw(self, context):
         report = workflow.read_report(context.scene.underwhere)
         plan = report["output_plan"]
-        self.layout.label(text=f"Output hides {plan['hidden_polygon_count']} polygons / "
-                               f"{plan['hidden_triangle_count']} triangles")
-        self.layout.label(text="Creates a copy at the source position.")
-        self.layout.label(text="Original object and its masks are preserved.")
-        self.layout.label(text="Inspected frames (first = current pose):")
-        caption = workflow.state_caption(report)
-        for offset in range(0, len(caption), 60):
-            self.layout.label(text=caption[offset:offset + 60])
-        self.layout.prop(self, 'deleted')
+        layout = self.layout
+        layout.label(text=t("Faces hidden: {faces} ({triangles} triangles)",
+                            faces=f"{plan['hidden_polygon_count']:,}",
+                            triangles=f"{plan['hidden_triangle_count']:,}"), translate=False)
+        layout.label(text=t("The copy is placed where the Body is. The original is not changed."),
+                     translate=False)
+        layout.label(text=t("Inspected frames: {frames}", frames=workflow.state_caption(report)[:60]),
+                     translate=False)
+        layout.prop(self, 'deleted')
         if plan["manual_risk_faces"]:
-            self.layout.label(text=f"{len(plan['manual_risk_faces'])} risky manual Hide overrides",
-                              icon='ERROR')
+            layout.label(text=t("Faces you hid that were judged visible or unsure: {count}",
+                                count=len(plan['manual_risk_faces'])), icon='ERROR', translate=False)
         if plan.get("retained_uncertain_faces"):
-            self.layout.label(text=f"{len(plan['retained_uncertain_faces'])} undecided faces stay hidden "
-                                   "(existing mask kept)", icon='ERROR')
+            layout.label(text=t("Unsure faces still hidden by the existing mask: {count}",
+                                count=len(plan['retained_uncertain_faces'])), icon='ERROR', translate=False)
 
     def execute(self, context):
         key = workflow.scene_key(context.scene)
@@ -912,7 +1059,8 @@ class UNDERWHERE_OT_apply(SafeOperator, Operator):
             report = report.copy()
             report['outputs'] = report['outputs'] + [output]
             workflow.save_report(s, report)
-            self.report({'INFO'}, f"Created {output['object']}; source preserved")
+            self.report({'INFO'}, t("Created {names}. The original is unchanged.",
+                                    names=", ".join(output.get("objects", [output["object"]]))))
             return {'FINISHED'}
         except Exception as exc:
             return self.fail(context, exc)
@@ -920,14 +1068,40 @@ class UNDERWHERE_OT_apply(SafeOperator, Operator):
             workflow.BUSY.discard(key)
 
 
+class UNDERWHERE_OT_select_output(SafeOperator, Operator):
+    bl_idname = "underwhere.select_output"
+    bl_label = "Select the copy"
+    bl_description = "Select the copies made by the last output, ready to export"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    def execute(self, context):
+        try:
+            outputs = workflow.read_report(context.scene.underwhere)["outputs"]
+            names = (outputs[-1].get("objects") or [outputs[-1]["object"]]) if outputs else []
+            objects = [bpy.data.objects[name] for name in names if name in bpy.data.objects]
+            if not objects:
+                raise adapter.InputError("The copy no longer exists.")
+            if context.mode != 'OBJECT':
+                bpy.ops.object.mode_set(mode='OBJECT')
+            for obj in context.selected_objects:
+                obj.select_set(False)
+            for obj in objects:
+                obj.select_set(True)
+            context.view_layer.objects.active = objects[0]
+            return {'FINISHED'}
+        except Exception as exc:
+            return self.fail(context, exc)
+
+
 class UNDERWHERE_OT_export(SafeOperator, Operator, ExportHelper):
     bl_idname = "underwhere.export"
-    bl_label = "Export Shareable Report"
-    bl_description = "Save a summary without mesh coordinates, connectivity, object/material names or personal paths"
+    bl_label = "Export shareable report"
+    bl_description = "Save a summary without mesh coordinates, connectivity, object or material names, or personal paths"
     filename_ext = ".json"
     filter_glob: StringProperty(default="*.json", options={'HIDDEN'})
-    private: BoolProperty(name="Private full diagnostics (contains mesh data)", default=False,
-                          description="Includes purchased mesh geometry and names; do not attach to public issues")
+    private: BoolProperty(name="Include full diagnostics (contains mesh data)", default=False,
+                          translation_context=CTX,
+                          description="Includes purchased mesh geometry and names; never attach it to a public issue")
 
     def execute(self, context):
         try:
@@ -940,14 +1114,14 @@ class UNDERWHERE_OT_export(SafeOperator, Operator, ExportHelper):
 
 class UNDERWHERE_OT_repair_policy(SafeOperator, Operator):
     bl_idname = "underwhere.repair_policy"
-    bl_label = "Repair Policy"
-    bl_description = "Choose which existing hides an Audit restores; evidence is unchanged"
+    bl_label = "Repair policy"
+    bl_description = "Choose which faces hidden by the existing mask are shown again. The verdicts do not change"
     bl_options = {'REGISTER', 'UNDO'}
-    policy: EnumProperty(items=[
-        (RESTORE_UNRESOLVED, "Restore exposed + undecided",
-         "Keep only confirmed candidates hidden (strict)"),
-        (RESTORE_EXPOSED, "Restore exposed only",
-         "Keep the existing mask where no exposure was observed; undecided faces stay hidden"),
+    policy: EnumProperty(translation_context=CTX, items=[
+        (RESTORE_UNRESOLVED, "Show visible and unsure faces again",
+         "Keep only faces confirmed hidden under the mask (strict)"),
+        (RESTORE_EXPOSED, "Show visible faces again",
+         "Keep the existing mask wherever no face was seen; unsure faces stay hidden"),
     ])
 
     def execute(self, context):
@@ -956,7 +1130,7 @@ class UNDERWHERE_OT_repair_policy(SafeOperator, Operator):
             s = context.scene.underwhere
             report = workflow.fresh_report(context, s).copy()
             if report["input"]["mode"] != "AUDIT":
-                raise adapter.InputError("Repair policy applies to Audit results only")
+                raise adapter.InputError("The repair policy applies only when checking an existing mask.")
             report["repair_policy"] = self.policy
             report["output_verification"] = adapter.measure_plan(context, s, report)
             workflow.save_report(s, report)
@@ -964,6 +1138,47 @@ class UNDERWHERE_OT_repair_policy(SafeOperator, Operator):
             return {'FINISHED'}
         except Exception as exc:
             return self.fail(context, exc)
+
+
+class UNDERWHERE_OT_go_step(Operator):
+    bl_idname = "underwhere.go_step"
+    bl_label = "Go to step"
+    bl_description = "Switch the sidebar to this step"
+    bl_translation_context = CTX
+    step: EnumProperty(items=STEPS, translation_context=CTX)
+
+    def execute(self, context):
+        context.scene.underwhere.ui_step = self.step
+        return {'FINISHED'}
+
+
+def colours_hidden(context):
+    """True when this 3D View would not show the comparison's colours."""
+    space = getattr(context, "space_data", None)
+    if space is None or space.type != 'VIEW_3D':
+        return False
+    shading = space.shading
+    return shading.type == 'WIREFRAME' or (shading.type == 'SOLID' and shading.color_type != 'MATERIAL')
+
+
+class UNDERWHERE_OT_show_colours(Operator):
+    bl_idname = "underwhere.show_colours"
+    bl_label = "Show colours"
+    bl_description = "Show material colours in this 3D View, so the verdict colours appear"
+    bl_options = {'REGISTER', 'UNDO'}
+    bl_translation_context = CTX
+
+    @classmethod
+    def poll(cls, context):
+        return getattr(context, "space_data", None) is not None and context.space_data.type == 'VIEW_3D'
+
+    def execute(self, context):
+        shading = context.space_data.shading
+        if shading.type == 'WIREFRAME':
+            shading.type = 'SOLID'
+        if shading.type == 'SOLID':
+            shading.color_type = 'MATERIAL'
+        return {'FINISHED'}
 
 
 class UNDERWHERE_UL_occluders(UIList):
@@ -976,20 +1191,8 @@ class UNDERWHERE_UL_issues(UIList):
         try:
             caption = face_caption(workflow.read_report(context.scene.underwhere), item.face)
         except (adapter.InputError, KeyError):
-            caption = f"Face {item.face}"
-        layout.label(text=f"{caption}: {reason_label(item.label)}", icon='ERROR')
-
-
-def status_icon(status):
-    if status.startswith("STALE"):
-        return 'ERROR'
-    if status.startswith("CHECK"):
-        return 'TIME'
-    if status.startswith("Cancelled"):
-        return 'CANCEL'
-    if status == "READY" or status.startswith("Preflight OK"):
-        return 'CHECKMARK'
-    return 'INFO'
+            caption = t("Face {index}", index=item.face)
+        layout.label(text=f"{caption}: {reason_label(item.label)}", icon='ERROR', translate=False)
 
 
 def is_busy(context):
@@ -1006,26 +1209,28 @@ def current_report(context):
         return None
 
 
-#: Classification legend; each entry also toggles that colour on the comparison.
+#: Verdict legend; each entry also toggles that colour on the comparison.
 CLASSIFY_LEGEND = [
-    ("Candidate", 'COLLECTION_COLOR_04', 'HIDE_CANDIDATE'),
-    ("Keep", 'COLLECTION_COLOR_05', 'KEEP_EXPOSED'),
-    ("Review", 'COLLECTION_COLOR_03', 'REVIEW'),
-    ("Mask hides exposed", 'COLLECTION_COLOR_01', 'UNSAFE_EXISTING_MASK'),
-    ("Mask hides undecided", 'COLLECTION_COLOR_06', 'UNCERTAIN_EXISTING_MASK'),
+    ("Hideable", 'COLLECTION_COLOR_04', 'HIDE_CANDIDATE'),
+    ("Visible", 'COLLECTION_COLOR_05', 'KEEP_EXPOSED'),
+    ("Unsure", 'COLLECTION_COLOR_03', 'REVIEW'),
+    ("Mask hides visible", 'COLLECTION_COLOR_01', 'UNSAFE_EXISTING_MASK'),
+    ("Mask hides unsure", 'COLLECTION_COLOR_06', 'UNCERTAIN_EXISTING_MASK'),
     ("Hidden by you", 'COLLECTION_COLOR_07', 'MANUAL_HIDE'),
     ("Kept by you", 'OUTLINER_COLLECTION', 'MANUAL_KEEP'),
 ]
 AUDIT_ONLY = {'UNSAFE_EXISTING_MASK', 'UNCERTAIN_EXISTING_MASK'}
 
 LEGENDS = {
-    'DIFF': [("Newly hidden", 'COLLECTION_COLOR_04'), ("Restored", 'COLLECTION_COLOR_05'),
+    'DIFF': [("Newly hidden", 'COLLECTION_COLOR_04'), ("Shown again", 'COLLECTION_COLOR_05'),
              ("Still hidden", 'COLLECTION_COLOR_08'), ("Visible", 'OUTLINER_COLLECTION')],
     'POSES': [("Hidden in all", 'COLLECTION_COLOR_04'), ("Hidden in 75%+", 'COLLECTION_COLOR_03'),
               ("Hidden in 50%+", 'COLLECTION_COLOR_02'), ("Hidden in some", 'COLLECTION_COLOR_01'),
               ("Never hidden", 'COLLECTION_COLOR_05'), ("Undecided", 'OUTLINER_COLLECTION')],
 }
 
+VERDICT_ROW = [(CANDIDATE, "Hideable", 'COLLECTION_COLOR_04'), (KEEP, "Visible", 'COLLECTION_COLOR_05'),
+               (REVIEW, "Unsure", 'COLLECTION_COLOR_03')]
 
 TRUSTED_MATERIALS = ("CONSTANT_OPAQUE_PRINCIPLED", "USER_ASSUMED_OPAQUE")
 #: Witness verdicts that mean "a clothing material could not be trusted".
@@ -1035,12 +1240,25 @@ MATERIAL_REASONS = {"ALPHA_OR_TRANSMISSION_UNTRUSTED", "UNSUPPORTED_SHADER", "NO
 
 def size_caption(size, factor):
     if factor == 1.0:
-        return f"Body {size:.3g} m"
-    return f"Body {size:.3g} m in scene units; sampled as {size * factor:.3g} m (x{factor:g})"
+        return t("Body size: {size} m", size=f"{size:.3g}")
+    return t("The Body is {size} m in scene units; it was analyzed as {scaled} m.",
+             size=f"{size:.3g}", scaled=f"{size * factor:.3g}")
+
+
+def preflight_lines(notice):
+    lines = [t("Inputs look fine."), size_caption(notice["size"], notice["factor"])]
+    if notice["untrusted_total"]:
+        lines.append(t("Materials not confirmed opaque: {count}",
+                       count=notice["untrusted_total"]))
+        for verdict, count in notice["untrusted"].items():
+            lines.append(f"{reason_label(verdict)}: {count}")
+    if notice["mask_warning"]:
+        lines.append(reason_label(notice["mask_warning"]))
+    return lines
 
 
 def material_blockers(report):
-    """(material name, Review face count) for untrusted clothing materials, largest first."""
+    """(material name, unsure face count) for untrusted clothing materials, largest first."""
     counts = Counter(face["witness"].get("material") for face in report["faces"]
                      if face["verdict"] == REVIEW and face["witness"]
                      and face["witness"].get("material_verdict") in MATERIAL_REASONS)
@@ -1048,7 +1266,7 @@ def material_blockers(report):
 
 
 def stale_explanation(status):
-    """Two short lines on why the result is out of date."""
+    """Two short message ids on why the result is out of date."""
     reason = "This result no longer matches the scene."
     if "loaded" in status or "expired" in status or "loading" in status or not status.startswith("STALE"):
         reason = "Results are not saved in .blend files."
@@ -1057,17 +1275,172 @@ def stale_explanation(status):
     elif any(word in status for word in ("inputs changed", "no longer supported", "frame changed",
                                          "texture", "Body objects changed")):
         reason = "The Body, clothing, materials or frames changed."
-    return [reason, "Output stays off until you analyze again."]
+    return [reason, "Your Keep and Hide choices are kept. Analyze again to continue."]
 
 
 def stale_guard(layout, settings):
     """Say why a result panel is disabled, then return its disabled body layout."""
     if not settings.status.startswith("STALE"):
         return layout
-    layout.label(text="Out of date: use Analyze Again at the top", icon='ERROR')
+    layout.label(text=t("Out of date. Use Analyze again at the top."), icon='ERROR', translate=False)
     body = layout.column()
     body.enabled = False
     return body
+
+
+def removal_share(report):
+    """(faces the output hides, all faces, share 0..1)."""
+    total = len(report["faces"])
+    hidden = report["output_plan"]["hidden_polygon_count"]
+    return hidden, total, (hidden / total if total else 0.0)
+
+
+def summary_line(report):
+    hidden, _, share = removal_share(report)
+    return t("Removable faces: {count} ({percent}%)", count=f"{hidden:,}", percent=round(share * 100))
+
+
+KNOWN_STATUS = ("READY", "Choose Body and occluders", "Analyzing", "Cancelled", "CHECK", "STALE",
+                "Preflight OK", "Frame ", "Build ", "Sample ", "Face ")
+
+
+def status_view(context, settings, report):
+    """(kind, lines) for the status box: what is going on and what to do next."""
+    status = settings.status
+    if status.startswith("Cancelled"):
+        return 'info', [t("The analysis was cancelled. Nothing was changed.")]
+    if status == "Preflight OK":
+        try:
+            notice = json.loads(settings.notice)
+        except ValueError:
+            notice = None
+        if notice:
+            warn = notice["untrusted_total"] or notice["mask_warning"]
+            return ('warn' if warn else 'ok'), preflight_lines(notice)
+    if status.startswith("CHECK"):
+        return 'info', wrap(t("The inputs changed. They are checked again at the next step."))
+    if not status.startswith(KNOWN_STATUS):
+        return 'error', wrap(describe_message(status))
+    if report is not None:
+        return None, []
+    if settings.body is None or not any(item.object for item in settings.occluders):
+        return 'start', [t("Choose the Body and its clothing.")] + wrap(
+            t("Select the clothing, then the Body last, and press Use selection."))
+    return 'start', [t("Ready to analyze."), t("Press Analyze below.")]
+
+
+STATUS_ICONS = {'ok': 'CHECKMARK', 'warn': 'ERROR', 'error': 'CANCEL', 'info': 'INFO', 'start': 'INFO'}
+
+
+def draw_status(layout, context, settings, report):
+    if not is_busy(context) and not settings.status.startswith("STALE") and report is not None \
+            and status_view(context, settings, report)[0] is None:
+        return
+    box = layout.box()
+    column = box.column(align=True)
+    if is_busy(context):
+        column.label(text=t("Analyzing…"), icon='TIME', translate=False)
+        column.progress(factor=settings.progress, type='BAR', text=f"{round(settings.progress * 100)}%")
+        box.operator("underwhere.cancel", text=t("Cancel"), icon='CANCEL', translate=False)
+        return
+    if settings.status.startswith("STALE") or (settings.result_json and report is None):
+        for number, line in enumerate(stale_explanation(settings.status)):
+            for part in wrap(t(line)):
+                column.label(text=part, icon='ERROR' if number == 0 else 'BLANK1', translate=False)
+                number = 1
+        row = box.row()
+        row.scale_y = 1.3
+        row.operator("underwhere.analyze", text=t("Analyze again"), icon='FILE_REFRESH', translate=False)
+        return
+    kind, lines = status_view(context, settings, report)
+    for number, line in enumerate(lines):
+        column.label(text=line, icon=STATUS_ICONS[kind] if number == 0 else 'BLANK1', translate=False)
+
+
+def next_steps(report):
+    """What still needs a person, most important first.
+
+    Each item: level ('attention', 'decide', 'done', 'info'), text, and actions
+    such as ('opaque', material), ('analyze',), ('review',), ('export',)."""
+    plan = report["output_plan"]
+    overrides = report.get("overrides", {})
+    attention, decide, info = [], [], []
+    mask_warning = existing_mask_warning(report["input"]["mode"], report["existing_mask"], len(report["faces"]))
+    if mask_warning:
+        attention.append({"text": reason_label(mask_warning), "actions": []})
+    findings = report.get("findings", {})
+    if findings.get(UNSAFE):
+        attention.append({"text": t("Visible faces hidden by the existing mask: {count}. Choose a repair policy under Check and decide.", count=f"{findings[UNSAFE]:,}"),
+                          "actions": []})
+    for issue in report.get("occluder_issues", []):
+        reasons = ", ".join(reason_label(code) for code in issue["reason_codes"])
+        attention.append({"text": t("{object}: {reasons}. Faces it covers stay unsure.",
+                                    object=issue["object"], reasons=reasons), "actions": []})
+    if plan["manual_risk_faces"]:
+        attention.append({"text": t("Faces you hid that were judged visible or unsure: {count}. Check them before you export.", count=len(plan["manual_risk_faces"])),
+                          "actions": []})
+    if plan.get("retained_uncertain_faces"):
+        attention.append({"text": t("Unsure faces still hidden by the existing mask: {count}",
+                                    count=len(plan["retained_uncertain_faces"])), "actions": []})
+    for name, count in material_blockers(report)[:3]:
+        if name:
+            text = t("{material} is not confirmed opaque. Unsure faces because of it: {count}",
+                     material=name, count=f"{count:,}")
+            decide.append({"text": text, "count": count, "actions": [("opaque", name), ("analyze",)]})
+        else:
+            decide.append({"text": t("Clothing without a material. Unsure faces because of it: {count}",
+                                     count=f"{count:,}"), "count": count, "actions": []})
+    open_faces = sum(1 for face in report["faces"]
+                     if face["verdict"] == REVIEW and str(face["face"]) not in overrides)
+    if open_faces:
+        decide.append({"text": t("Unsure faces left: {count}. Look at them and choose Keep or Hide.",
+                                 count=f"{open_faces:,}"), "count": open_faces, "actions": [("review",)]})
+    factor = report["input"]["settings"].get("scale_normalization", 1.0)
+    if factor != 1.0:
+        info.append({"text": size_caption(report["input"].get("body_size_metres") or 0.0, factor), "actions": []})
+    if plan.get("kept_at_shared_vertices"):
+        info.append({"text": t("Hideable faces kept because they share vertices with visible faces: {count}. No action is needed.", count=f"{len(plan['kept_at_shared_vertices']):,}"),
+                     "actions": []})
+    assumed = report.get("assumptions", {}).get("dependent_candidate_faces", 0)
+    if assumed:
+        info.append({"text": t("Hideable faces that rely on your Opaque setting: {count}", count=f"{assumed:,}"),
+                     "actions": []})
+    items = [dict(item, level='attention') for item in attention]
+    items += [dict(item, level='decide') for item in sorted(decide, key=lambda item: -item["count"])]
+    if not items:
+        items.append({"level": 'done', "text": t("Nothing is left to decide. You can export now."),
+                      "actions": [("export",)]})
+    items += [dict(item, level='info') for item in info]
+    return items
+
+
+LEVEL_ICONS = {'attention': 'ERROR', 'decide': 'QUESTION', 'done': 'CHECKMARK', 'info': 'INFO'}
+
+
+def draw_next_step(layout, item):
+    box = layout.box()
+    column = box.column(align=True)
+    for number, line in enumerate(wrap(item["text"])):
+        column.label(text=line, icon=LEVEL_ICONS[item["level"]] if number == 0 else 'BLANK1', translate=False)
+    row = box.column(align=True) if any(action[0] == "review" for action in item["actions"]) \
+        else box.row(align=True)
+    for action in item["actions"]:
+        if action[0] == "opaque":
+            material = bpy.data.materials.get(action[1])
+            if material is not None and not adapter.material_policy(material)["assumption_blocked"]:
+                row.prop(material, "underwhere_assume_opaque", text=t("Opaque"), translate=False)
+        elif action[0] == "analyze":
+            row.operator("underwhere.analyze", text=t("Analyze again"), icon='FILE_REFRESH', translate=False)
+        elif action[0] == "review":
+            op = row.operator("underwhere.edit_selection", text=t("Pick on the comparison"),
+                              icon='SELECT_SET', translate=False)
+            op.target = 'COMPARISON'
+            op.tool = 'BOX'
+            row.operator("underwhere.select_group", text=t("Select all on the Body"),
+                         icon='RESTRICT_SELECT_OFF', translate=False).group = 'REVIEW'
+        elif action[0] == "export":
+            row.operator("underwhere.go_step", text=t("Go to Export"), icon='FORWARD',
+                         translate=False).step = 'EXPORT'
 
 
 class UNDERWHERE_PT_main(Panel):
@@ -1076,22 +1449,21 @@ class UNDERWHERE_PT_main(Panel):
     bl_space_type = 'VIEW_3D'
     bl_region_type = 'UI'
     bl_category = "UnderWhere"
+    bl_translation_context = CTX
 
     def draw(self, context):
         s = context.scene.underwhere
+        report = current_report(context)
         layout = self.layout
-        box = layout.box()
-        box.label(text=s.status, icon=status_icon(s.status))
-        if is_busy(context):
-            box.prop(s, "progress", text="Progress")
-            box.operator("underwhere.cancel", icon='CANCEL')
-        elif s.status.startswith("STALE") or (s.result_json and current_report(context) is None):
-            column = box.column(align=True)
-            for line in stale_explanation(s.status):
-                column.label(text=line, icon='INFO')
-            row = box.row()
-            row.scale_y = 1.3
-            row.operator("underwhere.analyze", text="Analyze Again", icon='FILE_REFRESH')
+        draw_status(layout, context, s, report)
+        row = layout.row(align=True)
+        row.scale_y = 1.2
+        row.prop(s, "ui_step", expand=True)
+        if s.ui_step != 'SETUP' and report is None and not is_busy(context):
+            box = layout.box()
+            box.label(text=t("Analyze first to see a result here."), icon='INFO', translate=False)
+            box.operator("underwhere.go_step", text=t("Go to Set up"), icon='BACK',
+                         translate=False).step = 'SETUP'
 
 
 class SubPanel:
@@ -1099,23 +1471,35 @@ class SubPanel:
     bl_region_type = 'UI'
     bl_category = "UnderWhere"
     bl_parent_id = "UNDERWHERE_PT_main"
+    bl_translation_context = CTX
+    step = 'SETUP'
+    needs_report = False
+
+    @classmethod
+    def poll(cls, context):
+        s = context.scene.underwhere
+        if s.ui_step != cls.step:
+            return False
+        return not cls.needs_report or current_report(context) is not None
 
 
 class ResultPanel(SubPanel):
-    @classmethod
-    def poll(cls, context):
-        return current_report(context) is not None
+    step = 'REVIEW'
+    needs_report = True
 
 
 class UNDERWHERE_PT_inputs(SubPanel, Panel):
-    bl_label = "1  Inputs"
+    bl_label = "Body and clothing"
     bl_idname = "UNDERWHERE_PT_inputs"
 
     def draw(self, context):
         s = context.scene.underwhere
         layout = self.layout
         layout.enabled = not is_busy(context)
-        layout.operator("underwhere.use_selection", icon='RESTRICT_SELECT_OFF')
+        row = layout.row()
+        row.scale_y = 1.2
+        row.operator("underwhere.use_selection", text=t("Use selection"), icon='RESTRICT_SELECT_OFF',
+                     translate=False)
         layout.prop(s, "body")
         layout.prop(s, "use_extra_bodies")
         if s.use_extra_bodies:
@@ -1125,40 +1509,59 @@ class UNDERWHERE_PT_inputs(SubPanel, Panel):
             buttons = row.column(align=True)
             buttons.operator("underwhere.body_part", text="", icon='ADD')
             buttons.operator("underwhere.body_part", text="", icon='REMOVE').remove = True
-            layout.label(text="+ adds the selected meshes; each part gets its own copy", icon='INFO')
-        layout.label(text="Occluders")
+            layout.label(text=t("+ adds the selected meshes."), icon='INFO', translate=False)
+        layout.label(text=t("Clothing"), translate=False)
         row = layout.row()
         row.template_list("UNDERWHERE_UL_occluders", "", s, "occluders", s, "occluder_index", rows=3)
         buttons = row.column(align=True)
         buttons.operator("underwhere.occluder", text="", icon='ADD')
         buttons.operator("underwhere.occluder", text="", icon='REMOVE').remove = True
-        layout.prop(s, "mode", expand=True)
-        if s.mode == 'AUDIT' and s.body:
-            layout.prop_search(s, "existing_mask", s.body, "modifiers", icon='MOD_MASK')
 
 
 class UNDERWHERE_PT_inspection(SubPanel, Panel):
-    bl_label = "2  Inspection"
+    bl_label = "Analysis"
     bl_idname = "UNDERWHERE_PT_inspection"
 
     def draw(self, context):
         s = context.scene.underwhere
         layout = self.layout
         layout.enabled = not is_busy(context)
-        layout.label(text="States")
+        column = layout.column(align=True)
+        column.label(text=t("Detail"), translate=False)
+        column.row(align=True).prop(s, "preset", expand=True)
+        if s.mode == 'AUDIT':
+            layout.label(text=t("Checking the existing mask {mask}", mask=s.existing_mask or "-"),
+                         icon='MOD_MASK', translate=False)
+        if s.scope == 'EXPLICIT_FRAMES':
+            layout.label(text=t("Also inspecting frames {frames}", frames=s.frames), icon='TIME', translate=False)
+        row = layout.row()
+        row.scale_y = 1.6
+        row.operator("underwhere.analyze", text=t("Analyze"), icon='PLAY', translate=False)
+        layout.operator("underwhere.preflight", text=t("Check inputs only"), icon='CHECKMARK', translate=False)
+
+
+class UNDERWHERE_PT_options(SubPanel, Panel):
+    bl_label = "Poses and purpose"
+    bl_idname = "UNDERWHERE_PT_options"
+    bl_parent_id = "UNDERWHERE_PT_inspection"
+    bl_options = {'DEFAULT_CLOSED'}
+
+    def draw(self, context):
+        s = context.scene.underwhere
+        layout = self.layout
+        layout.enabled = not is_busy(context)
+        layout.label(text=t("Poses"), translate=False)
         layout.prop(s, "scope", expand=True)
         if s.scope == 'EXPLICIT_FRAMES':
             layout.prop(s, "frames")
-        layout.label(text="Work budget")
-        layout.prop(s, "preset", expand=True)
-        row = layout.row(align=True)
-        row.scale_y = 1.4
-        row.operator("underwhere.preflight", icon='CHECKMARK')
-        row.operator("underwhere.analyze", icon='PLAY')
+        layout.label(text=t("Purpose"), translate=False)
+        layout.prop(s, "mode", expand=True)
+        if s.mode == 'AUDIT' and s.body:
+            layout.prop_search(s, "existing_mask", s.body, "modifiers", icon='MOD_MASK')
 
 
 class UNDERWHERE_PT_materials(SubPanel, Panel):
-    bl_label = "Materials"
+    bl_label = "Clothing materials"
     bl_idname = "UNDERWHERE_PT_materials"
     bl_parent_id = "UNDERWHERE_PT_inspection"
     bl_options = {'DEFAULT_CLOSED'}
@@ -1170,30 +1573,32 @@ class UNDERWHERE_PT_materials(SubPanel, Panel):
         materials = {slot.material for item in s.occluders if item.object
                      for slot in item.object.material_slots if slot.material}
         if not materials:
-            layout.label(text="No occluder materials")
+            layout.label(text=t("The clothing has no materials."), translate=False)
             return
-        layout.label(text="Assume opaque is your own assumption", icon='INFO')
+        for line in wrap(t("Opaque is your own statement that the whole material blocks the view.")):
+            layout.label(text=line, translate=False)
         for material in sorted(materials, key=lambda m: m.name):
             policy = adapter.material_policy(material)
             trusted = policy['automatic_verdict'] == "CONSTANT_OPAQUE_PRINCIPLED"
             column = layout.column(align=True)
             row = column.row()
-            row.label(text=material.name, icon='MATERIAL')
+            row.label(text=material.name, icon='MATERIAL', translate=False)
             toggle = row.row()
             toggle.enabled = not policy['assumption_blocked'] and not trusted
-            toggle.prop(material, 'underwhere_assume_opaque', text="Opaque")
+            toggle.prop(material, 'underwhere_assume_opaque', text=t("Opaque"), translate=False)
             if trusted:
-                column.label(text="Auto: trusted", icon='CHECKMARK')
+                column.label(text=t("Confirmed opaque automatically"), icon='CHECKMARK', translate=False)
             elif policy['assumption_blocked']:
-                column.label(text="Backface culling: cannot assume", icon='ERROR')
+                column.label(text=t("Backface culling is on, so it cannot be marked opaque"), icon='ERROR',
+                             translate=False)
             else:
                 detail = f" ({', '.join(policy['animation'])})" if policy.get('animation') else ""
-                column.label(text="Auto: " + reason_label(policy['automatic_verdict']) + detail,
-                             icon='QUESTION')
+                column.label(text=reason_label(policy['automatic_verdict']) + detail, icon='QUESTION',
+                             translate=False)
 
 
 class UNDERWHERE_PT_advanced(SubPanel, Panel):
-    bl_label = "Advanced"
+    bl_label = "Sampling values"
     bl_idname = "UNDERWHERE_PT_advanced"
     bl_parent_id = "UNDERWHERE_PT_inspection"
     bl_options = {'DEFAULT_CLOSED'}
@@ -1205,81 +1610,48 @@ class UNDERWHERE_PT_advanced(SubPanel, Panel):
         layout.prop(s, "spatial_step")
         layout.prop(s, "angle")
         layout.prop(s, "touch_tolerance")
-        layout.label(text=f"Scene scale: {context.scene.unit_settings.scale_length:g} m / unit")
+        layout.label(text=t("Scene scale: {scale} m per unit",
+                            scale=f"{context.scene.unit_settings.scale_length:g}"), translate=False)
 
 
 class UNDERWHERE_PT_results(ResultPanel, Panel):
-    bl_label = "3  Results"
+    bl_label = "Result"
     bl_idname = "UNDERWHERE_PT_results"
 
     def draw(self, context):
         s = context.scene.underwhere
         report = current_report(context)
-        plan = report["output_plan"]
+        layout = stale_guard(self.layout, s)
         counts = report["counts"]
-        layout = self.layout
+        hidden, total, share = removal_share(report)
+        column = layout.column(align=True)
+        column.label(text=summary_line(report), icon='MOD_MASK', translate=False)
+        column.progress(factor=share, type='BAR',
+                        text=t("{hidden} of {total} faces", hidden=f"{hidden:,}", total=f"{total:,}"))
         grid = layout.grid_flow(columns=3, even_columns=True, align=True)
-        for label, caption, icon in [(CANDIDATE, "Candidate", 'COLLECTION_COLOR_04'),
-                                     (KEEP, "Keep", 'COLLECTION_COLOR_05'),
-                                     (REVIEW, "Review", 'COLLECTION_COLOR_03')]:
-            grid.label(text=f"{caption} {counts.get(label, 0)}", icon=icon)
-        layout.label(text=f"Output hides {plan['hidden_polygon_count']} faces", icon='MOD_MASK')
-        layout.label(text="States: " + workflow.state_caption(report)[:48], icon='TIME')
+        for label, caption, icon in VERDICT_ROW:
+            grid.label(text=f"{t(caption)} {counts.get(label, 0):,}", icon=icon, translate=False)
+        if report.get("carried_choices"):
+            row = layout.row()
+            row.label(text=t("Earlier choices kept: {count}", count=report["carried_choices"]), icon='INFO',
+                      translate=False)
+            row.operator("underwhere.clear_choices", text=t("Clear"), translate=False)
         if report["input"]["mode"] == "AUDIT":
+            plan = report["output_plan"]
             box = layout.box()
-            existing = len(report["existing_mask"]["hidden_faces"])
-            box.label(text=f"Existing mask hides {existing} faces", icon='MOD_MASK')
-            findings = report["findings"]
-            if findings.get(UNSAFE):
-                box.label(text=f"Hides exposed faces: {findings[UNSAFE]}", icon='COLLECTION_COLOR_01')
-            if findings.get(UNCERTAIN):
-                box.label(text=f"Hides undecided faces: {findings[UNCERTAIN]}", icon='COLLECTION_COLOR_06')
-            box.label(text=f"Restored {len(plan['restored_existing_faces'])}, "
-                           f"newly hidden {len(plan['newly_hidden_faces'])}")
-        warnings = []
-        mask_warning = existing_mask_warning(report["input"]["mode"], report["existing_mask"],
-                                             len(report["faces"]))
-        if mask_warning:
-            warnings.append(reason_label(mask_warning))
-        for issue in report.get("occluder_issues", []):
-            reasons = ", ".join(reason_label(code) for code in issue["reason_codes"])
-            warnings.append(f"{issue['object']}: {reasons}")
-        if plan["manual_risk_faces"]:
-            warnings.append(f"Manual Hide over Keep/Review: {len(plan['manual_risk_faces'])} faces")
-        if plan.get("retained_uncertain_faces"):
-            warnings.append(f"Undecided faces kept hidden: {len(plan['retained_uncertain_faces'])}")
-        assumed = report.get("assumptions", {}).get("dependent_candidate_faces", 0)
-        if assumed:
-            warnings.append(f"Candidates relying on Assume opaque: {assumed}")
-        if plan.get("kept_at_shared_vertices"):
-            warnings.append(f"Candidates kept at shared vertices: {len(plan['kept_at_shared_vertices'])}")
-        factor = report["input"]["settings"].get("scale_normalization", 1.0)
-        if factor != 1.0:
-            warnings.append(size_caption(report["input"].get("body_size_metres") or 0.0, factor))
-        if warnings:
-            box = layout.box()
-            for line in warnings:
-                box.label(text=line, icon='ERROR')
-        if not counts.get(CANDIDATE):
-            box = layout.box()
-            box.label(text="No hide candidates. Main reasons:", icon='INFO')
-            for code, count in review_reason_counts(report)[:3]:
-                box.label(text=f"{reason_label(code)}: {count}", icon='DOT')
-        blockers = material_blockers(report)
-        if blockers:
-            box = layout.box()
-            box.label(text="Review faces blocked by clothing materials", icon='MATERIAL')
-            for name, count in blockers[:5]:
-                row = box.row()
-                row.label(text=f"{name or 'No material'}: {count}")
-                material = bpy.data.materials.get(name) if name else None
-                if material is not None and not adapter.material_policy(material)["assumption_blocked"]:
-                    row.prop(material, "underwhere_assume_opaque", text="Opaque")
-            box.label(text="Tick Opaque only if fully opaque, then Analyze", icon='LIGHT')
+            box.label(text=t("Faces the existing mask hides: {count}",
+                             count=f"{len(report['existing_mask']['hidden_faces']):,}"), icon='MOD_MASK',
+                      translate=False)
+            box.label(text=t("Shown again: {restored}. Newly hidden: {added}.",
+                             restored=len(plan['restored_existing_faces']), added=len(plan['newly_hidden_faces'])),
+                      translate=False)
+        layout.label(text=t("Next steps"), translate=False)
+        for item in next_steps(report):
+            draw_next_step(layout, item)
 
 
 class UNDERWHERE_PT_review(ResultPanel, Panel):
-    bl_label = "4  Review and Fix"
+    bl_label = "Check and decide"
     bl_idname = "UNDERWHERE_PT_review"
 
     def draw(self, context):
@@ -1290,89 +1662,79 @@ class UNDERWHERE_PT_review(ResultPanel, Panel):
         column = layout.column(align=True)
         row = column.row(align=True)
         row.prop(s, "preview_mode", text="")
-        row.operator("underwhere.preview", text="Update Comparison", icon='FILE_REFRESH')
+        row.operator("underwhere.preview", text=t("Update"), icon='FILE_REFRESH', translate=False)
         if s.preview_mode == 'CLASSIFY':
             grid = column.grid_flow(columns=2, even_columns=True, align=True)
             audit = report["input"]["mode"] == "AUDIT"
             for caption, icon, key in CLASSIFY_LEGEND:
                 if audit or key not in AUDIT_ONLY:
-                    grid.prop_enum(s, "preview_show", key, text=caption, icon=icon)
-            column.label(text="Click a color to show or hide it", icon='RESTRICT_VIEW_OFF')
+                    grid.prop_enum(s, "preview_show", key, text=t(caption), icon=icon)
+            column.label(text=t("Click a colour to show or hide it."), translate=False)
         elif LEGENDS.get(s.preview_mode):
             grid = column.grid_flow(columns=2, even_columns=True, align=True)
             for caption, icon in LEGENDS[s.preview_mode]:
-                grid.label(text=caption, icon=icon)
+                grid.label(text=t(caption), icon=icon, translate=False)
             if s.preview_mode == 'POSES':
                 states = len(report.get("sampled_states", []))
                 if states < 2:
-                    column.label(text="Inspect several frames to see shades", icon='ERROR')
+                    column.label(text=t("Inspect several frames to see shades."), icon='ERROR', translate=False)
                 else:
-                    column.label(text=f"Share of {states} inspected frames", icon='TIME')
-        column.label(text="Shown beside the Body; use Material Preview", icon='INFO')
+                    column.label(text=t("Share of {count} inspected frames", count=states), translate=False)
+        if s.preview_mode != 'OFF' and colours_hidden(context):
+            column.operator("underwhere.show_colours", text=t("Show colours in this view"), icon='SHADING_SOLID',
+                            translate=False)
 
-        layout.label(text="Fix faces")
         box = layout.box()
         selecting = selecting_on(context, s)
         tool = active_selection_tool(context) if selecting else None
-
-        box.label(text="1  Choose faces")
+        box.label(text=t("Choose faces"), translate=False)
         box.prop(s, "selection_target", expand=True)
         row = box.row(align=True)
         row.scale_y = 1.3
         for key, caption, icon in [('BOX', "Box", 'SELECT_SET'), ('LASSO', "Lasso", 'CURVE_BEZCURVE'),
                                    ('CIRCLE', "Brush", 'BRUSH_DATA')]:
-            op = row.operator("underwhere.edit_selection", text=caption, icon=icon,
+            op = row.operator("underwhere.edit_selection", text=t(caption), icon=icon, translate=False,
                               depress=selecting == s.selection_target and tool == key)
             op.target = s.selection_target
             op.tool = key
         hint = box.column(align=True)
         if not selecting:
-            hint.label(text="Press Box, Lasso or Brush to start", icon='INFO')
+            for line in wrap(t("Press Box, Lasso or Brush to start.")):
+                hint.label(text=line, translate=False)
         else:
             count = sum(obj.data.total_face_sel for obj in context.objects_in_mode if obj.type == 'MESH')
-            where = "comparison" if selecting == 'COMPARISON' else "Body"
             if count:
-                hint.label(text=f"{count} faces selected on the {where}", icon='CHECKMARK')
+                hint.label(text=t("Selected: {count}", count=f"{count:,}"), icon='CHECKMARK', translate=False)
             else:
-                hint.label(text=f"Drag over faces on the {where}", icon='MOUSE_LMB_DRAG')
-            hint.label(text="Shift adds, Ctrl removes", icon='BLANK1')
-        review_count = report["counts"].get(REVIEW, 0)
-        existing_count = sum(report["findings"].values())
-        if review_count or existing_count:
-            row = box.row(align=True)
-            if review_count:
-                row.operator("underwhere.select_group", text=f"All Review ({review_count})",
-                             icon='RESTRICT_SELECT_OFF').group = 'REVIEW'
-            if existing_count:
-                row.operator("underwhere.select_group", text=f"Mask issues ({existing_count})",
-                             icon='RESTRICT_SELECT_OFF').group = 'EXISTING'
-
+                hint.label(text=t("Drag over faces"), icon='MOUSE_LMB_DRAG', translate=False)
+            hint.label(text=t("Shift adds, Ctrl removes"), icon='BLANK1', translate=False)
         box.separator()
-        box.label(text="2  Change them")
-        box.prop(s, "override_review_only", text="Only change Review faces")
+        box.label(text=t("Decide"), translate=False)
+        box.prop(s, "override_review_only")
         row = box.row(align=True)
         row.scale_y = 1.3
-        for action, caption, icon in [('KEEP', "Keep", 'HIDE_OFF'), ('HIDE', "Hide", 'HIDE_ON'),
-                                      ('RESET', "Clear", 'X')]:
-            op = row.operator("underwhere.override", text=caption, icon=icon)
+        for action, icon in [('KEEP', 'HIDE_OFF'), ('HIDE', 'HIDE_ON'), ('RESET', 'X')]:
+            op = row.operator("underwhere.override", text=t(ACTION_CAPTIONS[action]), icon=icon, translate=False)
             op.action = action
             op.review_only = s.override_review_only
         if selecting:
-            box.operator("underwhere.finish_selection", text="Done (back to Object Mode)",
-                         icon='CHECKMARK')
+            box.operator("underwhere.finish_selection", text=t("Done"), icon='CHECKMARK', translate=False)
 
         if report["input"]["mode"] == "AUDIT":
             policy = report["output_plan"].get("repair_policy") or RESTORE_UNRESOLVED
-            layout.label(text="Repair existing mask")
+            layout.label(text=t("Repair the existing mask"), translate=False)
             column = layout.column(align=True)
-            for value, caption in [(RESTORE_UNRESOLVED, "Restore exposed + undecided"),
-                                   (RESTORE_EXPOSED, "Restore exposed only")]:
-                column.operator("underwhere.repair_policy", text=caption,
+            for value, caption in [(RESTORE_UNRESOLVED, "Show visible and unsure faces again"),
+                                   (RESTORE_EXPOSED, "Show visible faces again")]:
+                column.operator("underwhere.repair_policy", text=t(caption), translate=False,
                                 depress=policy == value).policy = value
+        row = layout.row()
+        row.scale_y = 1.3
+        row.operator("underwhere.go_step", text=t("Go to Export"), icon='FORWARD', translate=False).step = 'EXPORT'
 
 
 class UNDERWHERE_PT_reasons(ResultPanel, Panel):
-    bl_label = "Select by Reason"
+    bl_label = "Select by reason"
     bl_idname = "UNDERWHERE_PT_reasons"
     bl_parent_id = "UNDERWHERE_PT_review"
     bl_options = {'DEFAULT_CLOSED'}
@@ -1382,22 +1744,23 @@ class UNDERWHERE_PT_reasons(ResultPanel, Panel):
         layout = stale_guard(self.layout, s)
         reasons = review_reason_counts(current_report(context))
         if not reasons:
-            layout.label(text="No undecided faces", icon='CHECKMARK')
+            layout.label(text=t("No unsure faces"), icon='CHECKMARK', translate=False)
             return
-        layout.label(text="Selects on the Body; then Keep / Hide above", icon='INFO')
+        layout.label(text=t("Selects on the Body; then choose Keep or Hide."), translate=False)
         column = layout.column(align=True)
         for code, count in reasons[:8]:
-            op = column.operator("underwhere.select_group",
-                                 text=f"{reason_label(code)} ({count})", icon='DOT')
+            op = column.operator("underwhere.select_group", text=f"{reason_label(code)} ({count:,})", icon='DOT',
+                                 translate=False)
             op.group = 'REASON'
             op.reason = code
             hint = reason_hint(code)
             if hint:
-                column.label(text=hint, icon='LIGHT')
+                for line in wrap(hint):
+                    column.label(text=line, icon='BLANK1', translate=False)
 
 
 class UNDERWHERE_PT_faces(ResultPanel, Panel):
-    bl_label = "Face by Face"
+    bl_label = "One face at a time"
     bl_idname = "UNDERWHERE_PT_faces"
     bl_parent_id = "UNDERWHERE_PT_review"
     bl_options = {'DEFAULT_CLOSED'}
@@ -1409,40 +1772,72 @@ class UNDERWHERE_PT_faces(ResultPanel, Panel):
         if s.issues:
             layout.template_list('UNDERWHERE_UL_issues', '', s, 'issues', s, 'issue_index', rows=4)
         else:
-            layout.label(text="No issues", icon='CHECKMARK')
+            layout.label(text=t("No unsure faces"), icon='CHECKMARK', translate=False)
         box = layout.box()
         box.prop(s, "face_index")
         if s.face_index < len(report["faces"]):
             face = report["faces"][s.face_index]
-            box.label(text=reason_label(face["finding"] or face["verdict"]))
+            box.label(text=reason_label(face["finding"] or face["verdict"]), translate=False)
             for reason in face["reason_codes"]:
-                box.label(text=reason_label(reason))
+                box.label(text=reason_label(reason), translate=False)
             if face["witness"] and face["witness"].get("material"):
-                box.label(text="Material: " + face["witness"]["material"], icon='MATERIAL')
+                box.label(text=t("Material: {name}", name=face["witness"]["material"]), icon='MATERIAL',
+                          translate=False)
             hints = {reason_hint(code) for code in face["reason_codes"]} - {None}
             for hint in sorted(hints):
-                box.label(text=hint, icon='LIGHT')
+                for number, line in enumerate(wrap(hint)):
+                    box.label(text=line, icon='LIGHT' if number == 0 else 'BLANK1', translate=False)
         row = box.row(align=True)
-        row.operator("underwhere.face", text="Select", icon='RESTRICT_SELECT_OFF').action = 'SELECT'
-        row.operator("underwhere.face", text="Next", icon='TRIA_RIGHT').action = 'NEXT'
-        row.operator("underwhere.face", text="View Ray", icon='HIDE_OFF').action = 'VIEW'
-        layout.label(text="Select puts the face on the Body; then Keep / Hide above", icon='INFO')
+        row.operator("underwhere.face", text=t("Select"), icon='RESTRICT_SELECT_OFF', translate=False).action = 'SELECT'
+        row.operator("underwhere.face", text=t("Next"), icon='TRIA_RIGHT', translate=False).action = 'NEXT'
+        row.operator("underwhere.face", text=t("View ray"), icon='HIDE_OFF', translate=False).action = 'VIEW'
 
 
-class UNDERWHERE_PT_output(ResultPanel, Panel):
-    bl_label = "5  Output"
+class UNDERWHERE_PT_output(SubPanel, Panel):
+    bl_label = "Export"
     bl_idname = "UNDERWHERE_PT_output"
+    step = 'EXPORT'
+    needs_report = True
 
     def draw(self, context):
         s = context.scene.underwhere
+        report = current_report(context)
         layout = stale_guard(self.layout, s)
-        column = layout.column(align=True)
-        column.scale_y = 1.2
-        column.operator("underwhere.apply", text="Apply to New Copy", icon='MOD_MASK')
-        column.operator("underwhere.apply", text="Create Deleted Copy (FBX)",
-                        icon='MESH_DATA').deleted = True
-        layout.operator("underwhere.export", icon='EXPORT')
-        layout.label(text="Object Mode; the source is not modified", icon='INFO')
+        hidden, _, share = removal_share(report)
+        layout.label(text=t("Faces the output hides: {count} ({percent}%)", count=f"{hidden:,}",
+                            percent=round(share * 100)), icon='MOD_MASK', translate=False)
+        if any(item["level"] == 'attention' for item in next_steps(report)):
+            box = layout.box()
+            column = box.column(align=True)
+            for number, line in enumerate(wrap(t("Some points still need attention. See Review."))):
+                column.label(text=line, icon='ERROR' if number == 0 else 'BLANK1', translate=False)
+            box.operator("underwhere.go_step", text=t("Go to Review"), icon='BACK', translate=False).step = 'REVIEW'
+        for caption, icon, deleted, explanation in [
+                ("Create masked copy", 'MOD_MASK', False,
+                 "Hides the faces with a Mask modifier. Easy to undo."),
+                ("Create copy with faces removed", 'MESH_DATA', True,
+                 "Deletes the faces but keeps shape keys, UVs and weights. Use this for FBX (VRChat).")]:
+            box = layout.box()
+            row = box.row()
+            row.scale_y = 1.3
+            row.operator("underwhere.apply", text=t(caption), icon=icon, translate=False).deleted = deleted
+            column = box.column(align=True)
+            for line in wrap(t(explanation)):
+                column.label(text=line, translate=False)
+        outputs = report.get("outputs", [])
+        if outputs:
+            names = ", ".join(outputs[-1].get("objects") or [outputs[-1]["object"]])
+            box = layout.box()
+            box.label(text=t("Created: {names}", names=names), icon='CHECKMARK', translate=False)
+            box.operator("underwhere.select_output", text=t("Select the copy"), icon='RESTRICT_SELECT_OFF',
+                         translate=False)
+            column = box.column(align=True)
+            for line in wrap(t("For FBX, select the copy and its Armature, then export with Selected Objects "
+                               "on and Apply Modifiers off.")):
+                column.label(text=line, translate=False)
+        layout.separator()
+        layout.operator("underwhere.export", text=t("Export shareable report"), icon='EXPORT', translate=False)
+        layout.label(text=t("The original Body is never changed."), icon='INFO', translate=False)
 
 
 @persistent
@@ -1623,12 +2018,14 @@ CLASSES = (
     UNDERWHERE_Issue, UNDERWHERE_Occluder, UNDERWHERE_Settings, UNDERWHERE_OT_setup, UNDERWHERE_OT_occluder,
     UNDERWHERE_OT_body_part,
     UNDERWHERE_OT_preflight, UNDERWHERE_OT_analyze, UNDERWHERE_OT_cancel,
-    UNDERWHERE_OT_preview, UNDERWHERE_OT_face, UNDERWHERE_OT_override, UNDERWHERE_OT_apply,
+    UNDERWHERE_OT_preview, UNDERWHERE_OT_face, UNDERWHERE_OT_override, UNDERWHERE_OT_clear_choices,
+    UNDERWHERE_OT_apply, UNDERWHERE_OT_select_output,
     UNDERWHERE_OT_export, UNDERWHERE_OT_repair_policy, UNDERWHERE_OT_select_group,
     UNDERWHERE_OT_edit_selection, UNDERWHERE_OT_finish_selection,
+    UNDERWHERE_OT_go_step, UNDERWHERE_OT_show_colours,
     UNDERWHERE_UL_occluders, UNDERWHERE_UL_issues,
-    UNDERWHERE_PT_main, UNDERWHERE_PT_inputs, UNDERWHERE_PT_inspection, UNDERWHERE_PT_materials,
-    UNDERWHERE_PT_advanced, UNDERWHERE_PT_results, UNDERWHERE_PT_review,
+    UNDERWHERE_PT_main, UNDERWHERE_PT_inputs, UNDERWHERE_PT_inspection, UNDERWHERE_PT_options,
+    UNDERWHERE_PT_materials, UNDERWHERE_PT_advanced, UNDERWHERE_PT_results, UNDERWHERE_PT_review,
     UNDERWHERE_PT_reasons, UNDERWHERE_PT_faces, UNDERWHERE_PT_output,
 )
 
@@ -1646,8 +2043,9 @@ def register():
             registered.append(cls)
         bpy.types.Scene.underwhere = PointerProperty(type=UNDERWHERE_Settings)
         bpy.types.Material.underwhere_assume_opaque = BoolProperty(
-            name="Assume opaque", default=False, update=input_changed,
-            description="User assumption: this entire material is opaque on both sides, with no transmission or displacement. Recorded in reports; not automatic proof")
+            name="Opaque", default=False, update=input_changed, translation_context=CTX,
+            description="Your statement that this whole material is opaque on both sides, with no transmission "
+                        "or displacement. Recorded in reports; not an automatic proof")
         for handlers, callback in HANDLERS:
             handlers.append(callback)
         bpy.app.timers.register(freshness_timer, persistent=True)

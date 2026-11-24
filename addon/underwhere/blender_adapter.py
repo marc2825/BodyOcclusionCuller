@@ -250,8 +250,7 @@ def inputs(context, settings):
         lengths = [axes.col[i].length for i in range(3)]
         if (min(lengths) <= 1e-12 * max(1.0, max(lengths))
                 or abs(axes.determinant()) <= 1e-9 * lengths[0] * lengths[1] * lengths[2]):
-            raise InputError(f"SINGULAR_TRANSFORM: {obj.name} has a zero or flattened scale; "
-                             "fix its scale, or apply it (Ctrl+A > Scale) on a working copy")
+            raise InputError(f"SINGULAR_TRANSFORM: {obj.name}")
     target = None
     if settings.mode == 'AUDIT':
         target = body.modifiers.get(settings.existing_mask)
@@ -661,7 +660,7 @@ def current_preview(scene):
 
 
 SOURCE_FACE_ATTRIBUTE = "underwhere_source_face"  # source face index + 1; 0 marks a new face
-EDITED_COMPARISON = "The comparison mesh was edited; press Update Comparison and select again"
+EDITED_COMPARISON = "The comparison mesh was edited. Press Update and select again."
 
 
 def selected_preview_faces(obj):

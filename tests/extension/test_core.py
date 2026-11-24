@@ -131,5 +131,56 @@ class Contracts(unittest.TestCase):
         self.assertIn('NONMANIFOLD_OCCLUDER', payload)
 
 
+    def test_every_ui_message_has_japanese_text(self):
+        import ast
+        import re
+        from underwhere.core.texts_ja import JA
+        tree = ast.parse((ROOT / "addon/underwhere/ui.py").read_text(encoding="utf-8"))
+        messages = set()
+
+        def add(node):
+            if isinstance(node, ast.Constant) and isinstance(node.value, str) and re.search(r"[a-z]", node.value):
+                messages.add(node.value)
+
+        tables = {"REASON_LABELS", "REASON_HINTS", "ERROR_TEXT", "ACTION_CAPTIONS"}
+        lists = {"STEPS", "CLASSIFY_LEGEND", "VERDICT_ROW"}
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Call):
+                name = getattr(node.func, "id", getattr(node.func, "attr", ""))
+                if name in ("t", "tip") and node.args:
+                    add(node.args[0])
+                if name.endswith("Property"):
+                    for keyword in node.keywords:
+                        if keyword.arg in ("name", "description"):
+                            add(keyword.value)
+                        if keyword.arg == "items" and isinstance(keyword.value, ast.List):
+                            for item in keyword.value.elts:
+                                for part in item.elts[1:3]:
+                                    add(part)
+            if isinstance(node, ast.Assign):
+                targets = {getattr(target, "id", None) for target in node.targets}
+                if targets & {"bl_label", "bl_description", "_OPAQUE_HINT", "_LOOK_HINT", "_FIT_HINT", "reason"}:
+                    add(node.value)
+                if targets & tables:
+                    for value in node.value.values:
+                        add(value)
+                if targets & lists:
+                    for item in node.value.elts:
+                        add(item.elts[1] if "STEPS" in targets or "VERDICT_ROW" in targets else item.elts[0])
+                if "LEGENDS" in targets:
+                    for value in node.value.values:
+                        for item in value.elts:
+                            add(item.elts[0])
+            if isinstance(node, ast.For) and isinstance(node.iter, ast.List):
+                for item in node.iter.elts:
+                    for part in getattr(item, "elts", []):
+                        add(part)
+        self.assertGreater(len(messages), 250)
+        self.assertEqual(sorted(m for m in messages if m not in JA and m != "UnderWhere"), [])
+        for english, japanese in JA.items():
+            self.assertEqual(set(re.findall(r"{(\w+)}", english)), set(re.findall(r"{(\w+)}", japanese)),
+                             english)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -19,6 +19,9 @@ def reset():
     s.body = None
     s.occluders.clear()
     s.use_extra_bodies = False
+    s.saved_choices = ""
+    s.notice = ""
+    s.ui_step = 'SETUP'
     s.extra_bodies.clear()
     s.preview_show = {'HIDE_CANDIDATE', 'KEEP_EXPOSED', 'REVIEW', 'UNSAFE_EXISTING_MASK',
                       'UNCERTAIN_EXISTING_MASK', 'MANUAL_HIDE', 'MANUAL_KEEP'}

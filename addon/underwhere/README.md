@@ -8,15 +8,15 @@ Blender の **Preferences → Get Extensions → Install from Disk** でこの Z
 
 ## 使い方
 
-1. 衣装と Body を選び（Body を最後にアクティブに）、**Use Selection → Preflight → Analyze** の順に押します。
-2. 結果を確認し、必要なら Edit Mode で面を選んで **Keep / Hide / Clear** で修正します。
-3. Object Mode で **Create Deleted Copy** を押すと、シェイプキーを保ったまま面を削除したコピーができます。FBX は Apply Modifiers をオフにして書き出してください。
+1. **準備**：衣装を選び、最後に素体を選んで「選択から設定」→「調べる」を押します。
+2. **確認**：「次にやること」に沿って、要確認の面を「残す」か「隠す」に決めます。
+3. **書き出し**：「面を削除したコピーを作る」を押すと、シェイプキーを保ったまま面を削除したコピーができます。FBX は Apply Modifiers をオフにして書き出してください。
 
 判定は検査したポーズでの候補であり、安全を保証するものではありません。
 
 ## English
 
-Install via **Preferences → Get Extensions → Install from Disk** and open the UnderWhere sidebar tab. Select clothing and the Body (active), then **Use Selection → Preflight → Analyze**. Review the result, adjust faces with **Keep / Hide / Clear**, and use **Create Deleted Copy** for FBX export (Apply Modifiers off). Results are candidates for the inspected poses, not a guarantee.
+Install via **Preferences → Get Extensions → Install from Disk** and open the UnderWhere sidebar tab. Three steps: in **Set up**, select clothing and the Body (active), then **Use selection → Analyze**; in **Review**, follow **Next steps** and choose **Keep** or **Hide** for unsure faces; in **Export**, use **Create copy with faces removed** for FBX (Apply Modifiers off). Results are candidates for the inspected poses, not a guarantee.
 
 Guide: https://github.com/marc2825/BodyOcclusionCuller
 

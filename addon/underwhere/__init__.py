@@ -9,10 +9,16 @@ VERSION = tomllib.loads(Path(__file__).with_name("blender_manifest.toml").read_t
 
 
 def register():
-    from . import ui
-    ui.register()
+    from . import i18n, ui
+    i18n.register()
+    try:
+        ui.register()
+    except Exception:
+        i18n.unregister()
+        raise
 
 
 def unregister():
-    from . import ui
+    from . import i18n, ui
     ui.unregister()
+    i18n.unregister()

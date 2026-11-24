@@ -57,6 +57,37 @@ def cache_report(token, report):
             LIVE_GUARDS.pop(run_id)
 
 
+def topology_digest(report):
+    """Identity of the analysed faces: choices carry over only while this matches."""
+    return adapter.digest([report["source_polygons"], [part["name"] for part in adapter.body_parts(report)]])
+
+
+def remember_choices(settings, report):
+    """Keep the Keep / Hide choices in the .blend, since results are session-only."""
+    if not report.get("topology_digest"):
+        return
+    overrides = report.get("overrides", {})
+    settings.saved_choices = json.dumps({
+        "topology": report["topology_digest"],
+        "HIDE": sorted(int(face) for face, value in overrides.items() if value == "HIDE"),
+        "KEEP": sorted(int(face) for face, value in overrides.items() if value == "KEEP"),
+    }, separators=(",", ":"))
+
+
+def restore_choices(settings, report):
+    """Earlier choices for the same faces; returns how many were restored."""
+    try:
+        saved = json.loads(settings.saved_choices) if settings.saved_choices else None
+    except ValueError:
+        return 0
+    if not isinstance(saved, dict) or saved.get("topology") != report["topology_digest"]:
+        return 0
+    count = len(report["faces"])
+    report["overrides"] = {str(face): value for value in ("HIDE", "KEEP") for face in saved.get(value, [])
+                           if isinstance(face, int) and 0 <= face < count}
+    return len(report["overrides"])
+
+
 def save_report(settings, report):
     # Undo stores only a tiny immutable revision reference. Geometry/evidence
     # stays in bounded session memory; revisions share those immutable arrays.
@@ -67,6 +98,7 @@ def save_report(settings, report):
     token = uuid.uuid4().hex
     cache_report(token, stored)
     settings.result_json = json.dumps({"schema": REFERENCE_SCHEMA, "token": token}, separators=(",", ":"))
+    remember_choices(settings, stored)
     settings.issues.clear()
     for face in report["faces"]:
         if face["finding"] or face["verdict"] == REVIEW:
@@ -126,8 +158,8 @@ def object_mode(context, settings):
         context.edit_object in adapter.body_objects(settings)
     if context.mode != 'OBJECT' and not was_edit:
         obj = context.edit_object or context.active_object
-        mode = "Edit Mode" if context.mode.startswith('EDIT') else context.mode.replace('_', ' ').title()
-        raise adapter.InputError(f"Leave {mode} on {obj.name if obj else 'the active object'} first (Tab)")
+        code = "EDIT_MODE_ELSEWHERE" if context.mode.startswith('EDIT') else "OTHER_MODE_ELSEWHERE"
+        raise adapter.InputError(f"{code}: {obj.name if obj else '?'}")
     try:
         if was_edit:
             bpy.ops.object.mode_set(mode='OBJECT')
@@ -282,6 +314,8 @@ def finish(context, settings, report, snapshot_seconds):
     validate_states(context, settings, report)
     report["timings_seconds"]["snapshot"] = snapshot_seconds
     report["environment"]["platform"] = __import__("platform").platform()
+    report["topology_digest"] = topology_digest(report)
+    report["carried_choices"] = restore_choices(settings, report)
     report["output_plan"] = output_plan(report)
     began = time.perf_counter()
     report["output_verification"] = adapter.measure_plan(context, settings, report)

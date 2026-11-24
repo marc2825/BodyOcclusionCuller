@@ -11,7 +11,7 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "addon"))
 sys.path.insert(0, str(Path(__file__).parent))
 import underwhere
-from underwhere import blender_adapter as adapter, workflow, ui
+from underwhere import blender_adapter as adapter, workflow, ui, i18n
 from underwhere.core.contracts import CANDIDATE, KEEP, REVIEW, UNSAFE, UNCERTAIN
 import fixtures as fx
 
@@ -1000,6 +1000,9 @@ class BlenderIntegration(unittest.TestCase):
             def separator(self, **kwargs):
                 pass
 
+            def progress(self, **kwargs):
+                self_test.assertGreaterEqual(kwargs.get("factor", 0.0), 0.0)
+
             def label(self, text="", icon='NONE', **kwargs):
                 self._icon(icon)
                 calls.append(("label", text))
@@ -1050,39 +1053,67 @@ class BlenderIntegration(unittest.TestCase):
                 drawn.append(panel.bl_idname)
             return drawn
 
+        def draw_steps():
+            drawn = []
+            for step in ('SETUP', 'REVIEW', 'EXPORT'):
+                bpy.context.scene.underwhere.ui_step = step
+                drawn += draw_all()
+            return drawn
+
         body, _, s = fx.setup()
-        self.assertNotIn("UNDERWHERE_PT_results", draw_all())
+        drawn = draw_steps()
+        self.assertIn("UNDERWHERE_PT_inputs", drawn)
+        self.assertNotIn("UNDERWHERE_PT_results", drawn)  # nothing to show before analysis
         self.analyze(s)
         s.use_extra_bodies = True  # draws the Body part list
         for mode in ('CLASSIFY', 'DIFF', 'OUTPUT', 'ORIGINAL', 'POSES', 'OFF'):
             s.preview_mode = mode
-            self.assertIn("UNDERWHERE_PT_output", draw_all())
+            drawn = draw_steps()
+            self.assertIn("UNDERWHERE_PT_results", drawn)
+            self.assertIn("UNDERWHERE_PT_output", drawn)
+        # Each step shows only its own panels.
+        s.ui_step = 'EXPORT'
+        self.assertNotIn("UNDERWHERE_PT_inputs", draw_all())
         s.use_extra_bodies = False
         fx.mask(body)
         self.analyze(s)
-        draw_all()
+        draw_steps()
         # While selecting, the panel shows the selected count and a Done button.
         s.preview_mode = 'CLASSIFY'
+        s.ui_step = 'REVIEW'
         for target in ('COMPARISON', 'BODY'):
             bpy.ops.underwhere.edit_selection(target=target)
             self.assertIn("UNDERWHERE_PT_faces", draw_all())
             self.assertIn(("operator", "underwhere.finish_selection"), calls)
             bpy.ops.underwhere.finish_selection()
-        for idname in ("underwhere.preflight", "underwhere.analyze",
+        for idname in ("underwhere.preflight", "underwhere.analyze", "underwhere.go_step",
                        "underwhere.repair_policy", "underwhere.preview",
                        "underwhere.apply", "underwhere.export"):
             self.assertIn(("operator", idname), calls)
-        # Untrusted clothing materials are listed with an Opaque switch.
-        _, _, s = fx.setup(alpha=.5)
+        # Untrusted clothing materials are named in the next steps, with an Opaque switch.
+        _, shell, s = fx.setup(alpha=.5)
         self.analyze(s)
-        draw_all()
-        self.assertIn(("label", "Review faces blocked by clothing materials"), calls)
-        self.assertIn(("label", "No hide candidates. Main reasons:"), calls)
+        draw_steps()
+        material = shell.data.materials[0].name
+        self.assertTrue(any(kind == "label" and text.startswith(material + " is not confirmed") for kind, text in calls))
+        self.assertIn(("label", "Next steps"), calls)
         # An out-of-date result says why and offers the way back.
         s.status = "STALE: inputs changed; Analyze again"
-        draw_all()
-        self.assertIn(("label", "Out of date: use Analyze Again at the top"), calls)
-        self.assertIn(("label", "The Body, clothing, materials or frames changed."), calls)
+        draw_steps()
+        self.assertIn(("label", "Out of date. Use Analyze again at the top."), calls)
+        self.assertIn(("label", ui.wrap("The Body, clothing, materials or frames changed.")[0]), calls)
+        # The same panels draw in Japanese.
+        prefs = bpy.context.preferences.view
+        language, translate = prefs.language, prefs.use_translate_interface
+        try:
+            prefs.language = 'ja_JP'
+            prefs.use_translate_interface = True
+            s.status = "READY"
+            calls.clear()
+            draw_steps()
+            self.assertIn(("label", "次にやること"), calls)
+        finally:
+            prefs.language, prefs.use_translate_interface = language, translate
 
     def test_59_bulk_select_review_faces_then_hide_them_at_once(self):
         body, _, s = fx.setup(alpha=.5)  # every face Review for an untrusted material
@@ -1139,7 +1170,7 @@ class BlenderIntegration(unittest.TestCase):
         self.assertEqual(ui.review_faces_only(report, list(range(6))), [])
         bpy.ops.underwhere.edit_selection(target='BODY')
         bpy.ops.mesh.select_all(action='SELECT')
-        with self.assertRaisesRegex(RuntimeError, 'No Review'):
+        with self.assertRaisesRegex(RuntimeError, 'No unsure faces'):
             bpy.ops.underwhere.override('EXEC_DEFAULT', action='HIDE', review_only=True)
         bpy.ops.object.mode_set(mode='OBJECT')
         self.assertEqual(workflow.read_report(s)["overrides"], {})
@@ -1278,7 +1309,7 @@ class BlenderIntegration(unittest.TestCase):
         for face in mesh.faces:
             face.select_set(True)
         bmesh.update_edit_mesh(preview.data)
-        with self.assertRaisesRegex(RuntimeError, 'No Review'):
+        with self.assertRaisesRegex(RuntimeError, 'No unsure faces'):
             bpy.ops.underwhere.override('EXEC_DEFAULT', action='HIDE', review_only=True)
         # The same faces stay selected so the user can untick the filter and retry.
         self.assertEqual(bpy.context.edit_object, preview)
@@ -1456,8 +1487,10 @@ class BlenderIntegration(unittest.TestCase):
         self.assertEqual(self.analyze(s)["counts"], {CANDIDATE: 6})
         body.scale = (1.0, 0.0, 1.0)
         bpy.context.view_layer.update()
-        with self.assertRaisesRegex(adapter.InputError, r"SINGULAR_TRANSFORM.*Ctrl\+A"):
+        with self.assertRaises(adapter.InputError) as caught:
             adapter.snapshot(bpy.context, s)
+        self.assertEqual(str(caught.exception), "SINGULAR_TRANSFORM: FixtureBody")
+        self.assertIn("Ctrl+A", ui.describe_message(str(caught.exception)))
 
     def test_75_untrusted_materials_are_named_and_opaque_restores_candidates(self):
         _, shell, s = fx.setup(alpha=.5)
@@ -1500,6 +1533,77 @@ class BlenderIntegration(unittest.TestCase):
         self.assertEqual(workflow.read_report(s)["overrides"], {"5": "KEEP"})
         self.assertEqual(bpy.context.edit_object, preview)
         bpy.ops.underwhere.finish_selection()
+
+
+    def test_77_choices_survive_reanalysis_and_reload_while_the_faces_match(self):
+        import bmesh
+        body, _, s = fx.setup(alpha=.5)  # every face unsure
+        self.analyze(s)
+        s.face_index = 2
+        bpy.ops.underwhere.override('EXEC_DEFAULT', action='HIDE', selected=False)
+        self.assertIn('"HIDE":[2]', s.saved_choices)
+        # Results live only in the session; the file keeps the choices.
+        workflow.REPORT_CACHE.clear()
+        report = self.analyze(s)
+        self.assertEqual(report["overrides"], {"2": "HIDE"})
+        self.assertEqual(report["carried_choices"], 1)
+        self.assertEqual(report["output_plan"]["requested_faces"], [2])
+        bpy.ops.underwhere.clear_choices('EXEC_DEFAULT')
+        self.assertEqual(workflow.read_report(s)["overrides"], {})
+        self.assertIn('"HIDE":[]', s.saved_choices)
+        # Choices for other faces are never applied.
+        s.face_index = 0
+        bpy.ops.underwhere.override('EXEC_DEFAULT', action='KEEP', selected=False)
+        mesh = bmesh.new()
+        mesh.from_mesh(body.data)
+        mesh.faces.ensure_lookup_table()
+        bmesh.ops.delete(mesh, geom=[mesh.faces[5]], context='FACES_ONLY')
+        mesh.to_mesh(body.data)
+        mesh.free()
+        body.data.update()
+        report = self.analyze(s)
+        self.assertEqual(report["overrides"], {})
+        self.assertEqual(report["carried_choices"], 0)
+
+    def test_78_analyze_opens_review_with_colours_and_next_steps(self):
+        _, shell, s = fx.setup(alpha=.5)
+        self.assertEqual(bpy.ops.underwhere.analyze(), {'FINISHED'})
+        self.assertEqual(s.ui_step, 'REVIEW')
+        self.assertIsNotNone(adapter.current_preview(bpy.context.scene))  # colours appear right away
+        steps = ui.next_steps(workflow.read_report(s))
+        self.assertEqual(steps[0]["level"], 'decide')
+        self.assertIn(("opaque", shell.data.materials[0].name), steps[0]["actions"])
+        self.assertTrue(any(("review",) in item["actions"] for item in steps))
+        # With nothing left to decide, the next step is to export.
+        _, _, s = fx.setup()
+        bpy.ops.underwhere.analyze()
+        self.assertEqual([item["level"] for item in ui.next_steps(workflow.read_report(s))], ['done'])
+        # Errors read as sentences that say how to fix them, and keep their code.
+        self.assertEqual(ui.describe_message("HIDDEN_INPUT: Shirt; make it visible in this view layer"),
+                         "Shirt is hidden. Show it in this view layer. (HIDDEN_INPUT)")
+        s.status = "MODIFIER_UNSUPPORTED: Body/Subsurf (SUBSURF)"
+        kind, lines = ui.status_view(bpy.context, s, None)
+        self.assertEqual(kind, 'error')
+        self.assertIn("Body/Subsurf", " ".join(lines))
+        s.status = "Choose Body and occluders"
+        self.assertEqual(ui.status_view(bpy.context, s, None)[0], 'start')
+
+    def test_79_japanese_interface_uses_the_add_on_wording(self):
+        prefs = bpy.context.preferences.view
+        language, translate = prefs.language, prefs.use_translate_interface
+        try:
+            prefs.language = 'ja_JP'
+            prefs.use_translate_interface = True
+            self.assertEqual(i18n.t("Analyze"), "調べる")
+            self.assertEqual(ui.reason_label(REVIEW), "要確認")
+            # Blender's own catalogue never replaces the add-on's terms.
+            self.assertEqual(i18n.t("Keep"), "残す")
+            self.assertEqual(i18n.t("Body"), "素体")
+            self.assertEqual(ui.describe_message("HIDDEN_INPUT: Shirt"),
+                             "Shirt が非表示です。このビューレイヤーで表示してください。 (HIDDEN_INPUT)")
+        finally:
+            prefs.language, prefs.use_translate_interface = language, translate
+        self.assertEqual(i18n.t("Analyze"), "Analyze")
 
 
 if __name__ == "__main__":

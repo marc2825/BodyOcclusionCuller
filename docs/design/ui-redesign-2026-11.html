@@ -1,0 +1,422 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>UnderWhere UI再設計案</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+JP:wght@400;500;600;700&family=Inter:wght@400;500;600&display=swap">
+<style>
+/* Layout: a left-aligned review document. Prose stays narrow; the mockups are
+   the evidence and sit in wrapping rows of fixed-width Blender sidebars. */
+:root {
+  --bg: #f3f5f8; --surface: #ffffff; --fg: #1c2229; --muted: #5a6470; --line: #d7dce3;
+  --accent: #3767ae; --accent-soft: #e4ecf7;
+  --high: #b83e25; --high-soft: #fbe6e0; --mid: #8f6400; --mid-soft: #f8ecc9; --low: #5a6470; --low-soft: #e6e9ee;
+  /* Blender's own interface colours; the mockups keep them in both themes. */
+  --bl-bg: #303030; --bl-head: #3a3a3a; --bl-widget: #545454; --bl-field: #1f1f1f; --bl-box: #262626;
+  --bl-fg: #e2e2e2; --bl-dim: #9c9c9c; --bl-blue: #4772b3; --bl-on: #ffffff; --bl-view: #3f3f3f;
+  /* Verdict colours used by the add-on. */
+  --c-hide: #24cc54; --c-keep: #1a80ff; --c-review: #ffaa14; --c-mhide: #f24db3; --c-mkeep: #ebebeb;
+  --font-text: "IBM Plex Sans JP", "Hiragino Sans", "Yu Gothic UI", Meiryo, sans-serif;
+  --font-ui: Inter, "IBM Plex Sans JP", "Yu Gothic UI", Meiryo, sans-serif;
+}
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) {
+  --bg: #17191d; --surface: #20242a; --fg: #e5e8ec; --muted: #9aa4b0; --line: #343a43;
+  --accent: #86acea; --accent-soft: #25344d;
+  --high: #f2937c; --high-soft: #4a2520; --mid: #e3b855; --mid-soft: #40351a; --low: #9aa4b0; --low-soft: #2c323a;
+  color-scheme: dark } }
+:root[data-theme="dark"] {
+  --bg: #17191d; --surface: #20242a; --fg: #e5e8ec; --muted: #9aa4b0; --line: #343a43;
+  --accent: #86acea; --accent-soft: #25344d;
+  --high: #f2937c; --high-soft: #4a2520; --mid: #e3b855; --mid-soft: #40351a; --low: #9aa4b0; --low-soft: #2c323a;
+  color-scheme: dark }
+
+body { background: var(--bg); color: var(--fg); font: 15px/1.75 var(--font-text); }
+.page { max-width: 1120px; margin: 0 auto; padding-block: 2.5rem 4rem;
+  padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px));
+  display: flex; flex-direction: column; gap: 3rem; }
+section { display: flex; flex-direction: column; gap: 1rem; min-width: 0; }
+h1 { font-size: 1.9rem; line-height: 1.3; font-weight: 700; margin: 0; text-wrap: balance; }
+h2 { font-size: 1.3rem; line-height: 1.4; font-weight: 700; margin: 0; padding-top: 1rem; border-top: 2px solid var(--fg); text-wrap: balance; }
+h3 { font-size: 1.05rem; font-weight: 600; margin: 0; }
+p { margin: 0; max-width: 42em; }
+.lead { font-size: 1.05rem; color: var(--muted); }
+ul { margin: 0; padding-left: 1.2em; max-width: 42em; display: flex; flex-direction: column; gap: .3rem; }
+a { color: var(--accent); }
+code { font-family: ui-monospace, Consolas, monospace; font-size: .88em; background: var(--low-soft); padding: .05em .35em; border-radius: 3px; }
+
+.scroll { overflow-x: auto; }
+table { border-collapse: collapse; width: 100%; font-size: .9rem; line-height: 1.6; background: var(--surface); }
+th, td { text-align: left; vertical-align: top; padding: .55rem .7rem; border-bottom: 1px solid var(--line); }
+th { font-weight: 600; color: var(--muted); font-size: .8rem; white-space: nowrap; }
+td.n { font-variant-numeric: tabular-nums; color: var(--muted); width: 2.2em; }
+tr.group td { background: var(--bg); font-weight: 600; padding-top: 1.1rem; border-bottom: 2px solid var(--line); }
+.audit { min-width: 640px; }
+.audit td:nth-child(3) { font-weight: 500; min-width: 14em; }
+.sev { display: inline-block; font-size: .75rem; font-weight: 600; padding: .05rem .5rem; border-radius: 99px; white-space: nowrap; }
+.sev.h { color: var(--high); background: var(--high-soft); }
+.sev.m { color: var(--mid); background: var(--mid-soft); }
+.sev.l { color: var(--low); background: var(--low-soft); }
+.compare { min-width: 720px; }
+.compare td:first-child { font-weight: 500; white-space: nowrap; }
+.compare .pick { background: var(--accent-soft); }
+
+.split { display: grid; grid-template-columns: minmax(0, 1fr); gap: 1.5rem; align-items: start; }
+@media (min-width: 900px) { .split { grid-template-columns: auto minmax(0, 1fr); gap: 2.5rem; } }
+.frames { display: flex; flex-wrap: wrap; gap: 1rem; align-items: flex-start; }
+figure { margin: 0; display: flex; flex-direction: column; gap: .4rem; min-width: 0; }
+figcaption { font-size: .8rem; color: var(--muted); max-width: 300px; }
+.notes { display: flex; flex-direction: column; gap: .9rem; min-width: 0; }
+.notes dl { margin: 0; display: grid; grid-template-columns: minmax(0, 1fr); gap: .15rem; }
+.notes dt { font-weight: 600; font-size: .85rem; color: var(--muted); margin-top: .6rem; }
+.notes dd { margin: 0; max-width: 40em; }
+.verdict { border-left: 4px solid var(--accent); background: var(--surface); padding: 1rem 1.2rem; display: flex; flex-direction: column; gap: .6rem; }
+
+/* ---- Blender sidebar mockups ---- */
+.bl { background: var(--bl-bg); color: var(--bl-fg); font: 11.5px/1.4 var(--font-ui); border-radius: 6px; padding: 6px;
+  display: flex; flex-direction: column; gap: 4px; width: 290px; max-width: 100%; box-sizing: border-box; }
+.bl .head { background: var(--bl-head); border-radius: 4px; padding: 4px 8px; font-weight: 500; }
+.bl .head::before { content: "▾ "; color: var(--bl-dim); }
+.bl .head.shut::before { content: "▸ "; }
+.bl .body { display: flex; flex-direction: column; gap: 4px; padding: 2px 4px 6px 12px; }
+.bl .b { background: var(--bl-widget); border-radius: 4px; padding: 4px 8px; text-align: center; flex: 1; min-width: 0; }
+.bl .b.on { background: var(--bl-blue); color: var(--bl-on); }
+.bl .b.big { padding: 8px; font-weight: 600; font-size: 12.5px; }
+.bl .row { display: flex; gap: 4px; }
+.bl .seg { display: flex; gap: 1px; }
+.bl .seg .b { border-radius: 0; }
+.bl .seg .b:first-child { border-radius: 4px 0 0 4px; } .bl .seg .b:last-child { border-radius: 0 4px 4px 0; }
+.bl .fld { background: var(--bl-field); border-radius: 4px; padding: 4px 8px; display: flex; justify-content: space-between; gap: 8px; }
+.bl .fld span:last-child { color: var(--bl-dim); }
+.bl .t { padding: 1px 2px; }
+.bl .t.dim { color: var(--bl-dim); }
+.bl .t.strong { font-size: 13px; font-weight: 600; }
+.bl .box { background: var(--bl-box); border-radius: 4px; padding: 6px; display: flex; flex-direction: column; gap: 4px; }
+.bl .sw { display: inline-block; width: 9px; height: 9px; border-radius: 2px; margin-right: 6px; }
+.bl .bar { display: flex; height: 9px; border-radius: 3px; overflow: hidden; }
+.bl .nums { display: flex; flex-wrap: wrap; gap: 2px 12px; font-variant-numeric: tabular-nums; }
+.hide { background: var(--c-hide); } .keep { background: var(--c-keep); } .review { background: var(--c-review); }
+.mhide { background: var(--c-mhide); } .mkeep { background: var(--c-mkeep); }
+.pin { display: inline-block; min-width: 1.5em; text-align: center; font: 600 10px/1.5 var(--font-ui); border-radius: 99px;
+  background: var(--c-review); color: var(--bl-field); margin-left: 4px; }
+
+.view { background: var(--bl-view); color: var(--bl-fg); font: 11.5px/1.4 var(--font-ui); border-radius: 6px; position: relative;
+  width: 520px; max-width: 100%; box-sizing: border-box; padding: 10px; display: flex; flex-direction: column; gap: 8px; }
+.view svg { width: 100%; height: auto; max-height: 300px; display: block; }
+.hud { background: var(--bl-box); border-radius: 4px; padding: 4px 8px; display: flex; flex-wrap: wrap; gap: 2px 14px; align-items: center; }
+.hud b { font-weight: 600; }
+.key { background: var(--bl-widget); border-radius: 3px; padding: 0 5px; margin-right: 4px; }
+</style>
+</head>
+<body>
+
+<div class="page">
+
+<header style="display:flex;flex-direction:column;gap:.8rem">
+  <h1>UnderWhere UI再設計案</h1>
+  <p class="lead">現在のサイドバー（v1.1.2）の課題を24点に整理し、作り直しの方向を3つ示します。実装はまだ行っていません。どの案で進めるかを選ぶための資料です。</p>
+</header>
+
+<section>
+  <h2>現在のUIの課題</h2>
+  <p>コード（<code>ui.py</code> のパネル描画）、ティザー画像、自動テストのスクリーンショットをもとに洗い出しました。重要度は、使い始めの人が作業を完了できるかどうかへの影響で付けています。右のモックの番号は、表の番号に対応します。</p>
+  <div class="split">
+    <figure>
+      <div class="bl" aria-label="現在のサイドバーの再現">
+        <div class="box"><div class="t">✓ READY <span class="pin">4</span></div></div>
+        <div class="head">1&nbsp; Inputs</div>
+        <div class="body">
+          <div class="b">Use Selection <span class="pin">12</span></div>
+          <div class="fld"><span>Body:</span><span>Body_base</span></div>
+          <div class="t">Occluders <span class="pin">8</span></div>
+          <div class="box"><div class="t">Cloth_sweater</div><div class="t">Cloth_tights</div><div class="t">Cloth_under_shorts</div></div>
+          <div class="seg"><div class="b on">Generate Mask</div><div class="b">Audit Existing Mask</div></div>
+        </div>
+        <div class="head">2&nbsp; Inspection</div>
+        <div class="body">
+          <div class="t">States</div>
+          <div class="seg"><div class="b on">Current Pose</div><div class="b">Current + Selected Frames</div></div>
+          <div class="t">Work budget <span class="pin">11</span></div>
+          <div class="seg"><div class="b">Quick</div><div class="b on">Balanced</div><div class="b">Detailed</div><div class="b">Custom</div></div>
+          <div class="row"><div class="b big">Preflight</div><div class="b big">Analyze <span class="pin">1</span></div></div>
+          <div class="head shut">Materials</div><div class="head shut">Advanced</div>
+        </div>
+        <div class="head">3&nbsp; Results</div>
+        <div class="body">
+          <div class="nums"><span><i class="sw hide"></i>Candidate 8508</span><span><i class="sw keep"></i>Keep 5409</span><span><i class="sw review"></i>Review 704</span></div>
+          <div class="t">Output hides 8364 faces <span class="pin">22</span></div>
+          <div class="t">States: 1</div>
+          <div class="box"><div class="t">⚠ Candidates kept at shared vertices: 144 <span class="pin">5</span></div></div>
+        </div>
+        <div class="head">4&nbsp; Review and Fix</div>
+        <div class="body">
+          <div class="row"><div class="fld" style="flex:1"><span>Classification</span><span>▾</span></div><div class="b">Update Comparison <span class="pin">6</span></div></div>
+          <div class="nums"><span><i class="sw hide"></i>Candidate</span><span><i class="sw keep"></i>Keep</span><span><i class="sw review"></i>Review</span><span><i class="sw mhide"></i>Hidden by you</span><span><i class="sw mkeep"></i>Kept by you</span></div>
+          <div class="t dim">Click a color to show or hide it</div>
+          <div class="t dim">Shown beside the Body; use Material Preview <span class="pin">13</span></div>
+          <div class="t">Fix faces</div>
+          <div class="box">
+            <div class="t">1&nbsp; Choose faces <span class="pin">3</span></div>
+            <div class="seg"><div class="b on">Comparison</div><div class="b">Body</div></div>
+            <div class="row"><div class="b">Box</div><div class="b">Lasso</div><div class="b">Brush</div></div>
+            <div class="t dim">Press Box, Lasso or Brush to start</div>
+            <div class="b">All Review (704)</div>
+            <div class="t">2&nbsp; Change them</div>
+            <div class="t">☑ Only change Review faces <span class="pin">14</span></div>
+            <div class="row"><div class="b">Keep</div><div class="b">Hide</div><div class="b">Clear</div></div>
+          </div>
+          <div class="head shut">Select by Reason</div><div class="head shut">Face by Face</div>
+        </div>
+        <div class="head">5&nbsp; Output</div>
+        <div class="body">
+          <div class="b">Apply to New Copy</div>
+          <div class="b">Create Deleted Copy (FBX) <span class="pin">10</span></div>
+          <div class="b">Export Shareable Report</div>
+          <div class="t dim">Object Mode; the source is not modified</div>
+        </div>
+      </div>
+      <figcaption>現在のサイドバー。解析後はパネルが9つ並び、通常の画面の高さには収まりません。数値はティザー画像のものです。</figcaption>
+    </figure>
+
+    <div class="scroll">
+      <table class="audit">
+        <thead><tr><th>#</th><th>重要度</th><th>課題</th><th>根拠</th></tr></thead>
+        <tbody>
+          <tr class="group"><td colspan="4">構造</td></tr>
+          <tr><td class="n">1</td><td><span class="sev h">高</span></td><td>縦に長く、主な操作が離れている</td><td>番号付きパネル5つとサブパネル4つが1列に並びます。Analyzeは中ほど、出力は一番下で、解析後はスクロールが必要です。</td></tr>
+          <tr><td class="n">2</td><td><span class="sev m">中</span></td><td>今どの段階にいるかが示されない</td><td>番号は順序を示しますが、全パネルが同時に開いたままで、次に押すものが強調されません。</td></tr>
+          <tr><td class="n">3</td><td><span class="sev l">低</span></td><td>番号の体系が二重になっている</td><td>パネルの「1〜5」の中に「1 Choose faces」「2 Change them」があります。</td></tr>
+          <tr><td class="n">4</td><td><span class="sev h">高</span></td><td>状態表示が内部用語の1行</td><td><code>READY</code>、<code>CHECK: inputs updated; verified on next operation</code>、<code>MODIFIER_UNSUPPORTED: …</code> など。状態・進捗・直前のエラーが同じ行に入り、幅が狭いと途切れます。</td></tr>
+          <tr><td class="n">5</td><td><span class="sev m">中</span></td><td>結果パネルに要約・警告・診断・操作が混ざる</td><td>警告はすべて同じアイコンです。「共有頂点のため残る」のような情報も、エラーと同じ見た目です。</td></tr>
+          <tr><td class="n">6</td><td><span class="sev m">中</span></td><td>色分けの表示が手動</td><td>Analyzeは比較メッシュを消すので、結果を見るには Update Comparison を押す必要があります。</td></tr>
+          <tr class="group"><td colspan="4">言葉</td></tr>
+          <tr><td class="n">7</td><td><span class="sev h">高</span></td><td>言語が混ざっている</td><td>ボタンは英語、判定の理由はBlenderが日本語のときだけ日本語です。英語環境では、内部コードを整形しただけの文になります。</td></tr>
+          <tr><td class="n">8</td><td><span class="sev h">高</span></td><td>内部用語・専門用語が多い</td><td>Occluders、Preflight、Work budget、States、Audit、Assume opaque、View Ray。文書では「衣装」、画面では「Occluders」と呼び方も違います。</td></tr>
+          <tr><td class="n">9</td><td><span class="sev m">中</span></td><td>同じ語に複数の意味がある</td><td>Keep は判定の名前でもあり手動操作でもあります。Hide は候補・操作・出力の3か所で使われます。</td></tr>
+          <tr><td class="n">10</td><td><span class="sev m">中</span></td><td>出力ボタンの違いが名前から分からない</td><td>Apply to New Copy と Create Deleted Copy (FBX)。どちらを選ぶべきかは文書を読まないと分かりません。</td></tr>
+          <tr class="group"><td colspan="4">操作</td></tr>
+          <tr><td class="n">11</td><td><span class="sev m">中</span></td><td>最初の選択肢が多い</td><td>モード2つ、検査範囲2つ、処理量4つ、PreflightとAnalyzeが、同じ重みで並びます。</td></tr>
+          <tr><td class="n">12</td><td><span class="sev m">中</span></td><td>入力の決まりが見えない</td><td>Use Selection は「Bodyを最後に選ぶ」前提です。＋ボタンの動きもリストごとに違います（衣装は空欄を追加、Bodyパーツは選択中のメッシュを追加）。</td></tr>
+          <tr><td class="n">13</td><td><span class="sev h">高</span></td><td>確認する場所が実物から離れている</td><td>横に置いた比較メッシュの上で確認します。色を見るにはMaterial Previewへの切り替えが必要で、衣装を着た実物の上では見られません。Edit Modeへの切り替えも伴います。</td></tr>
+          <tr><td class="n">14</td><td><span class="sev m">中</span></td><td>安全のための仕組みが見えにくい</td><td>Only change Review faces は既定でオンで、対象外の面を黙って外します。Hide は毎回確認ダイアログが出ます。</td></tr>
+          <tr><td class="n">15</td><td><span class="sev m">中</span></td><td>進み具合と終わりが見えない</td><td>未判定の面があといくつ残っているか、確認が済んだかどうかを示す表示がありません。</td></tr>
+          <tr><td class="n">16</td><td><span class="sev h">高</span></td><td>再解析で手動の指定が消える</td><td>結果はファイルに保存されず、開き直すと再解析が必要です。そのとき Keep / Hide の指定は引き継がれません。</td></tr>
+          <tr><td class="n">17</td><td><span class="sev l">低</span></td><td>出力したあとの案内がない</td><td>コピーは元のBodyと重なって作られます。どれを書き出すかは文書頼みです。</td></tr>
+          <tr class="group"><td colspan="4">見た目</td></tr>
+          <tr><td class="n">18</td><td><span class="sev m">中</span></td><td>強弱が弱く、説明文が常に場所を取る</td><td>ほぼすべての行がアイコン付きのラベルです。操作のヒントが常設で、縦の長さを増やしています。</td></tr>
+          <tr><td class="n">19</td><td><span class="sev m">中</span></td><td>色の意味が表示モードで変わる</td><td>緑は Classification で「隠す候補」、Before / After で「新たに隠れる」、Poses で「全フレームで隠れる」。色相だけで区別しているため、色覚によっては緑・黄・橙・赤が見分けにくくなります。</td></tr>
+          <tr><td class="n">20</td><td><span class="sev l">低</span></td><td>凡例の色見本が実際の色と少し違う</td><td>Blenderの既定アイコンを流用しています。白は枠だけのアイコンです。</td></tr>
+          <tr><td class="n">21</td><td><span class="sev m">中</span></td><td>幅が狭いとラベルが途切れる</td><td>自動テストのスクリーンショットで「Update Com…」「Mask hide…」と表示されています。</td></tr>
+          <tr><td class="n">22</td><td><span class="sev m">中</span></td><td>数字に文脈がない</td><td>件数だけで割合がありません。Candidate と Output hides の差は、離れた警告行で説明されます。</td></tr>
+          <tr class="group"><td colspan="4">知らせ方</td></tr>
+          <tr><td class="n">23</td><td><span class="sev l">低</span></td><td>成功の知らせがすぐ消える</td><td>画面下のステータスバーに一時的に出るだけです。</td></tr>
+          <tr><td class="n">24</td><td><span class="sev l">低</span></td><td>初めて開いたときの案内がない</td><td>最初の表示は「Choose Body and occluders」の1行と、全部の操作部品です。</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+  <h3>今のままでよい点</h3>
+  <ul>
+    <li>元のBodyを変更しないこと、判断できない面を自動で隠さないことが、画面の作りにも一貫して表れています。</li>
+    <li>ほぼすべての部品にツールチップがあります。</li>
+    <li>結果が古くなったときに、理由と再解析のボタンが出ます。</li>
+    <li>全パネルの描画が自動テストで確かめられています。作り直しても同じ方法で検証できます。</li>
+  </ul>
+</section>
+
+<section>
+  <h2>作り直しの前提</h2>
+  <p>Blenderのサイドバーは、フォント・色・余白をアドオン側から変えられません。変えられるのは、構成、文言、アイコン、進捗バー、ポップオーバー、そして3Dビューポートへの直接の描画です。そのため「洗練」は、部品の装飾ではなく、情報の順序と量、言葉、ビューポートの使い方で行います。</p>
+  <h3>どの案でも行うこと</h3>
+  <ul>
+    <li>画面の言葉を日本語と英語の両方で用意し、Blenderの言語設定に合わせます（課題7）。</li>
+    <li>用語を下の表のように言い換え、1つの語に1つの意味だけを持たせます（課題8、9、10）。</li>
+    <li>状態表示を「今どうなっていて、次に何をするか」の文にします。エラーは起きたことと直し方を書きます（課題4）。</li>
+    <li>解析が終わったら、色分けを自動で表示します（課題6）。</li>
+    <li>面の構成が変わっていなければ、再解析のあとも手動の指定を引き継ぎます（課題16）。</li>
+    <li>知らせを「情報」「注意」「エラー」の3段階に分けます（課題5）。</li>
+    <li>件数に割合を添えます（課題22）。</li>
+  </ul>
+  <div class="scroll">
+    <table style="min-width:560px">
+      <thead><tr><th>現在</th><th>日本語</th><th>英語</th></tr></thead>
+      <tbody>
+        <tr><td>Body / Occluders</td><td>素体 / 衣装</td><td>Body / Clothing</td></tr>
+        <tr><td>Candidate / Keep / Review</td><td>隠せる / 見える / 要確認</td><td>Hideable / Visible / Unsure</td></tr>
+        <tr><td>Keep / Hide / Clear（手動）</td><td>残す / 隠す / 取り消す</td><td>Keep / Hide / Undo choice</td></tr>
+        <tr><td>Preflight / Analyze</td><td>入力チェック / 調べる</td><td>Check inputs / Analyze</td></tr>
+        <tr><td>Work budget: Quick / Balanced / Detailed</td><td>細かさ: 速い / 標準 / 細かい</td><td>Detail: Fast / Standard / Fine</td></tr>
+        <tr><td>Apply to New Copy</td><td>マスクで隠したコピーを作る</td><td>Create masked copy</td></tr>
+        <tr><td>Create Deleted Copy (FBX)</td><td>面を削除したコピーを作る（FBX向け）</td><td>Create copy with faces removed (for FBX)</td></tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<section>
+  <h2>案A　ステップ式</h2>
+  <div class="split">
+    <div class="frames">
+      <figure>
+        <div class="bl">
+          <div class="seg"><div class="b on">1 準備</div><div class="b">2 確認</div><div class="b">3 書き出し</div></div>
+          <div class="t">選択中のメッシュから設定しました。</div>
+          <div class="fld"><span>素体</span><span>Body_base ✓</span></div>
+          <div class="fld"><span>衣装</span><span>5個 ✓　変更</span></div>
+          <div class="t">細かさ</div>
+          <div class="seg"><div class="b">速い</div><div class="b on">標準</div><div class="b">細かい</div></div>
+          <div class="head shut">詳しい設定（ポーズ、素材、既存マスクの検査）</div>
+          <div class="b big on">調べる</div>
+        </div>
+        <figcaption>1 準備。押すものは「調べる」だけ。細かい設定は折りたたみます。</figcaption>
+      </figure>
+      <figure>
+        <div class="bl">
+          <div class="seg"><div class="b">1 準備 ✓</div><div class="b on">2 確認</div><div class="b">3 書き出し</div></div>
+          <div class="t strong">8,364面を削除できます（57%）</div>
+          <div class="bar"><span class="hide" style="flex:8508"></span><span class="keep" style="flex:5409"></span><span class="review" style="flex:704"></span></div>
+          <div class="nums"><span><i class="sw hide"></i>隠せる 8,508</span><span><i class="sw keep"></i>見える 5,409</span><span><i class="sw review"></i>要確認 704</span></div>
+          <div class="box">
+            <div class="t">要確認の704面を、見て決めます。</div>
+            <div class="row"><div class="b on">囲む</div><div class="b">投げ縄</div><div class="b">なぞる</div></div>
+            <div class="t">12面を選択中</div>
+            <div class="row"><div class="b">残す</div><div class="b">隠す</div><div class="b">取り消す</div></div>
+          </div>
+          <div class="head shut">理由ごとに選ぶ</div>
+          <div class="head shut">1面ずつ見る</div>
+          <div class="row"><div class="b">← 準備に戻る</div><div class="b on">書き出しへ →</div></div>
+        </div>
+        <figcaption>2 確認。結果の要約、未判定の面の処理、次へ進むボタンが1画面に収まります。</figcaption>
+      </figure>
+    </div>
+    <div class="notes">
+      <p>サイドバーに、今の段階の内容だけを表示します。段階は「準備」「確認」「書き出し」の3つで、上の切り替えでいつでも戻れます。各段階で一番目立つボタンは1つだけです。</p>
+      <dl>
+        <dt>解決する課題</dt><dd>1、2、3、11、15、18、21。スクロールがほぼなくなり、次に押すものが常に分かります。</dd>
+        <dt>良い点</dt><dd>初めての人が迷いません。解析や出力のコードは変えないので、不具合が入りにくい作り直しです。</dd>
+        <dt>弱い点</dt><dd>慣れた人には、段階の切り替えが手数になります。確認は今と同じく横の比較メッシュの上で行うので、課題13は残ります。</dd>
+        <dt>実装の規模</dt><dd>中。<code>ui.py</code> のパネル構成の作り直しと、パネル描画テストの更新です。</dd>
+      </dl>
+    </div>
+  </div>
+</section>
+
+<section>
+  <h2>案B　ビューポート主役</h2>
+  <div class="split">
+    <div class="frames">
+      <figure>
+        <div class="view">
+          <div class="hud"><b>確認モード</b><span>要確認 残り 692 / 704</span></div>
+          <svg viewBox="0 0 240 250" role="img" aria-label="素体に判定の色を直接重ねた表示。衣装は半透明の輪郭で示す">
+            <rect x="0" y="0" width="240" height="250" fill="#3f3f3f"/>
+            <circle cx="120" cy="30" r="18" fill="#1a80ff"/>
+            <rect x="113" y="46" width="14" height="12" fill="#1a80ff"/>
+            <rect x="10" y="60" width="220" height="16" rx="8" fill="#1a80ff"/>
+            <rect x="60" y="60" width="120" height="16" fill="#24cc54"/>
+            <rect x="56" y="60" width="8" height="16" fill="#ffaa14"/>
+            <rect x="176" y="60" width="8" height="16" fill="#ffaa14"/>
+            <rect x="88" y="56" width="64" height="96" rx="12" fill="#24cc54"/>
+            <rect x="90" y="140" width="26" height="100" rx="10" fill="#1a80ff"/>
+            <rect x="124" y="140" width="26" height="100" rx="10" fill="#1a80ff"/>
+            <rect x="90" y="140" width="26" height="50" fill="#24cc54"/>
+            <rect x="124" y="140" width="26" height="50" fill="#24cc54"/>
+            <rect x="90" y="186" width="26" height="8" fill="#ffaa14"/>
+            <rect x="124" y="186" width="26" height="8" fill="#ffaa14"/>
+            <rect x="112" y="50" width="16" height="8" fill="#ffaa14"/>
+            <rect x="92" y="112" width="18" height="24" rx="4" fill="#f24db3"/>
+            <path d="M52 60 a10 10 0 0 1 10 -10 h116 a10 10 0 0 1 10 10 v14 a10 10 0 0 1 -10 10 h-18 v94 a12 12 0 0 1 -12 12 h-56 a12 12 0 0 1 -12 -12 v-94 h-18 a10 10 0 0 1 -10 -10 z" fill="#ffffff" fill-opacity="0.10" stroke="#ffffff" stroke-opacity="0.75" stroke-width="1.5" stroke-dasharray="5 4"/>
+          </svg>
+          <div class="hud"><span><i class="sw hide"></i>隠せる</span><span><i class="sw keep"></i>見える</span><span><i class="sw review"></i>要確認</span><span><i class="sw mhide"></i>自分で隠した</span></div>
+          <div class="hud"><span><span class="key">ドラッグ</span>隠す</span><span><span class="key">Ctrl+ドラッグ</span>残す</span><span><span class="key">Z</span>衣装を透かす</span><span><span class="key">Enter</span>完了</span></div>
+        </div>
+        <figcaption>3Dビューポート。素体そのものに色を重ね、衣装は透かして輪郭だけにします。操作のヒントは画面の中に出します。</figcaption>
+      </figure>
+      <figure>
+        <div class="bl">
+          <div class="fld"><span>素体</span><span>Body_base ✓</span></div>
+          <div class="fld"><span>衣装</span><span>5個 ✓</span></div>
+          <div class="b">調べ直す</div>
+          <div class="t strong">8,364面を削除できます（57%）</div>
+          <div class="bar"><span class="hide" style="flex:8508"></span><span class="keep" style="flex:5409"></span><span class="review" style="flex:704"></span></div>
+          <div class="b big on">確認モードを始める</div>
+          <div class="b">書き出す ▾</div>
+          <div class="head shut">詳しい設定</div>
+        </div>
+        <figcaption>サイドバーは入力・要約・書き出しだけになります。</figcaption>
+      </figure>
+    </div>
+    <div class="notes">
+      <p>確認の作業を、サイドバーではなく3Dビューポートで行います。横に比較メッシュを置く代わりに、素体そのものに判定の色を重ねます。専用のツールで、なぞった面を「隠す」「残す」に直接塗り分けます。Edit Modeへの切り替えは要りません。</p>
+      <dl>
+        <dt>解決する課題</dt><dd>1、13、14、15、18、19、20。課題13（実物の上で確認できない）を解決できるのはこの案だけです。色見本や縞模様も自前で描けるので、色覚への配慮も入れられます。</dd>
+        <dt>良い点</dt><dd>見たままを直接触る操作になります。視線がサイドバーとビューポートを往復しません。</dd>
+        <dt>弱い点</dt><dd>画面への描画、専用ツール、面の当たり判定を新しく作る必要があります。自動テストで確かめにくい部分が増え、Blenderのバージョンの違いにも影響されやすくなります。</dd>
+        <dt>実装の規模</dt><dd>大。色を重ねる表示だけなら中、塗り分けツールまで含めると大です。</dd>
+      </dl>
+    </div>
+  </div>
+</section>
+
+<section>
+  <h2>案C　やることリスト</h2>
+  <div class="split">
+    <div class="frames">
+      <figure>
+        <div class="bl">
+          <div class="fld"><span>Body_base と衣装5個</span><span>変更</span></div>
+          <div class="row"><div class="fld" style="flex:1"><span>標準</span><span>▾</span></div><div class="b on" style="flex:2">調べる</div></div>
+          <div class="t strong">8,364面を削除できます（57%）</div>
+          <div class="bar"><span class="hide" style="flex:8508"></span><span class="keep" style="flex:5409"></span><span class="review" style="flex:704"></span></div>
+          <div class="nums"><span><i class="sw hide"></i>8,508</span><span><i class="sw keep"></i>5,409</span><span><i class="sw review"></i>704</span></div>
+          <div class="t">次にやること</div>
+          <div class="box"><div class="t">Cloth_tights の素材が不透明か確認できず、212面が未判定です。</div><div class="b">不透明として扱う</div></div>
+          <div class="box"><div class="t">衣装の縁の492面が未判定です。</div><div class="b">見て決める</div></div>
+          <div class="box"><div class="t dim">頂点を共有しているため、144面は残ります。対応は不要です。</div></div>
+          <div class="row"><div class="b">マスクで隠したコピー</div><div class="b">面を削除したコピー</div></div>
+          <div class="row"><div class="b">レポート</div><div class="b">詳しい設定</div></div>
+        </div>
+        <figcaption>1枚のパネルに、要約と「次にやること」を影響の大きい順に並べます。素材の内訳（212面と492面）は説明用の例です。</figcaption>
+      </figure>
+    </div>
+    <div class="notes">
+      <p>段階に分けず、1枚のパネルにまとめます。解析の結果から「次にやること」を自動で作り、削減できる面数への影響が大きい順に、対処のボタンと一緒に並べます。すでにある診断（理由の内訳、素材、大きさ）を、読む順序に並べ替える案です。</p>
+      <dl>
+        <dt>解決する課題</dt><dd>1、5、11、15、18、22。「候補が少ないのはなぜか」に、画面が先回りして答えます。</dd>
+        <dt>良い点</dt><dd>慣れた人には最短です。3案のうち実装が一番小さく済みます。</dd>
+        <dt>弱い点</dt><dd>初めての人には、全体の流れが案Aほどはっきりしません。課題13は残ります。</dd>
+        <dt>実装の規模</dt><dd>小から中。</dd>
+      </dl>
+    </div>
+  </div>
+</section>
+
+<section>
+  <h2>比較とおすすめ</h2>
+  <div class="scroll">
+    <table class="compare">
+      <thead><tr><th></th><th>現在</th><th>案A ステップ式</th><th>案B ビューポート主役</th><th>案C やることリスト</th></tr></thead>
+      <tbody>
+        <tr><td>初めての人の分かりやすさ</td><td>低い</td><td class="pick">高い</td><td>高い</td><td>中くらい</td></tr>
+        <tr><td>慣れた人の速さ</td><td>中くらい</td><td class="pick">中くらい</td><td>高い</td><td>高い</td></tr>
+        <tr><td>スクロールの量</td><td>多い</td><td class="pick">ほぼなし</td><td>なし</td><td>少ない</td></tr>
+        <tr><td>実物の上での確認</td><td>できない</td><td class="pick">できない</td><td>できる</td><td>できない</td></tr>
+        <tr><td>実装の規模</td><td></td><td class="pick">中</td><td>大</td><td>小から中</td></tr>
+        <tr><td>不具合が入るおそれ</td><td></td><td class="pick">小さい</td><td>大きい</td><td>小さい</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <div class="verdict">
+    <h3>おすすめは、案Aを骨組みにして段階的に進めること</h3>
+    <p>3つの案は組み合わせられます。次の順で進めると、早い段階で効果が出て、危険の大きい部分を後回しにできます。</p>
+    <ul>
+      <li>第1段階：「どの案でも行うこと」と案Aの3段階の構成。案Cの「次にやること」を、案Aの「確認」の段に入れます。</li>
+      <li>第2段階：案Bのうち、素体に色を直接重ねる表示だけを追加します。面の選択は今の仕組みのまま使います。</li>
+      <li>第3段階：使われ方を見てから、案Bの塗り分けツールを作るかどうかを決めます。</li>
+    </ul>
+  </div>
+</section>
+
+</div>
+</body>
+</html>
