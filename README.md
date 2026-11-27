@@ -1,6 +1,6 @@
 # UnderWhere
 
-[![Version](https://img.shields.io/github/v/release/marc2825/BodyOcclusionCuller?label=version)](https://github.com/marc2825/BodyOcclusionCuller/releases)
+[![プレリリース](https://img.shields.io/github/v/release/marc2825/BodyOcclusionCuller?include_prereleases=true&sort=semver&label=%E3%83%97%E3%83%AC%E3%83%AA%E3%83%AA%E3%83%BC%E3%82%B9&color=yellow)](https://github.com/marc2825/BodyOcclusionCuller/releases)
 [![License: Original License](https://img.shields.io/badge/License-Original%20License-orange.svg)](LICENSE)
 
 [日本語](README.md) | [English](README_EN.md)

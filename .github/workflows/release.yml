@@ -1,7 +1,7 @@
 name: Release
 
 # Push a tag such as v1.0.0 to test, build and attach the Extension ZIP, its
-# SHA-256 and the demo to a draft GitHub Release. Review it, then publish it.
+# SHA-256 and the demo to a draft GitHub prerelease. Review it, then publish it.
 on:
   push:
     tags: ["v*"]
@@ -15,7 +15,7 @@ concurrency:
 
 jobs:
   release:
-    name: Draft release
+    name: Draft prerelease
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -72,11 +72,11 @@ jobs:
           "$BLENDER" -b --factory-startup --offline-mode --python-exit-code 1
           --python scripts/extension/create_sample.py
 
-      - name: Create the draft release
+      - name: Create the draft prerelease
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create "$GITHUB_REF_NAME" --draft --verify-tag \
+          gh release create "$GITHUB_REF_NAME" --draft --prerelease --verify-tag \
             --title "UnderWhere $VERSION" --notes-file release-notes.md \
             "dist/underwhere-$VERSION.zip" \
             "dist/underwhere-$VERSION.zip.sha256" \
